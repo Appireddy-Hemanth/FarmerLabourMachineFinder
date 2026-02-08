@@ -1,14 +1,26 @@
 import { useState, useEffect } from 'react';
 import { User, Job } from '../App';
-import { LogOut, Briefcase, MapPin, Calendar, Clock, DollarSign, Phone, Filter, Sparkles, Shield, Map, BellRing } from 'lucide-react';
+import {
+  findPaymentByJob,
+  getPaymentBadgeTone,
+  getPaymentStatusLabel,
+  getPayments,
+  markWorkCompleted,
+  markWorkStarted,
+  PaymentRecord
+} from '../state/payments';
+import { Briefcase, MapPin, Calendar, Clock, DollarSign, Phone, Filter, Sparkles, Shield, Map, BellRing, LogOut } from 'lucide-react';
 import { NotificationBell, NotificationItem } from './NotificationBell';
+import { useAuth } from '../state/auth';
+import { useNavigate } from 'react-router-dom';
 
 interface LabourerDashboardProps {
   user: User;
-  onLogout: () => void;
 }
 
-export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
+export function LabourerDashboard({ user }: LabourerDashboardProps) {
+  const { logout } = useAuth();
+  const navigate = useNavigate();
   const [language, setLanguage] = useState(() => localStorage.getItem('appLanguage') || 'English');
   const [activeTab, setActiveTab] = useState<'find-work' | 'my-work' | 'skills' | 'team' | 'attendance' | 'earnings' | 'safety' | 'profile'>('find-work');
   const [availableJobs, setAvailableJobs] = useState<Job[]>([]);
@@ -23,10 +35,14 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
   const [counterInputs, setCounterInputs] = useState<Record<string, { amount: string; reason: string }>>({});
   const [workProofs, setWorkProofs] = useState<Record<string, any>>({});
   const [paymentStates, setPaymentStates] = useState<Record<string, any>>({});
+  const [paymentRecords, setPaymentRecords] = useState<PaymentRecord[]>([]);
+  const [flashMessage, setFlashMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [profileForm, setProfileForm] = useState({
     name: user.name,
     phone: user.phone,
     village: user.village,
+    dailyWage: user.dailyWage ?? 650,
+    availability: user.availability ?? true,
     language: 'Telugu',
     capacity: 'High',
     preferredDistance: '10 km',
@@ -38,6 +54,11 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
       elderly: false
     }
   });
+
+  const handleLogout = () => {
+    logout();
+    navigate('/');
+  };
 
   useEffect(() => {
     loadData();
@@ -65,10 +86,16 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
   }, []);
 
   useEffect(() => {
+    setPaymentRecords(getPayments());
+  }, []);
+
+  useEffect(() => {
     setProfileForm({
       name: user.name,
       phone: user.phone,
       village: user.village,
+      dailyWage: user.dailyWage ?? 650,
+      availability: user.availability ?? true,
       language: 'Telugu',
       capacity: 'High',
       preferredDistance: '10 km',
@@ -95,19 +122,50 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
 
   const loadData = () => {
     const allJobs: Job[] = JSON.parse(localStorage.getItem('jobs') || '[]');
+    const payments = getPayments();
+    let jobsChanged = false;
+    const normalizedJobs = allJobs.map(job => {
+      if (job.acceptedBy !== user.id) return job;
+      const payment = payments.find(p => p.jobId === job.id);
+      if (!payment) return job;
+      let nextStatus = job.status;
+      if (payment.status === 'advance_paid') nextStatus = 'advance_paid';
+      if (payment.status === 'held') nextStatus = 'in_progress';
+      if (payment.status === 'completed' || payment.status === 'released') nextStatus = 'completed';
+      if (payment.status === 'refunded') nextStatus = 'cancelled';
+      if (nextStatus !== job.status) {
+        jobsChanged = true;
+        return { ...job, status: nextStatus };
+      }
+      return job;
+    });
+    if (jobsChanged) {
+      localStorage.setItem('jobs', JSON.stringify(normalizedJobs));
+    }
     
     // Available jobs (not accepted or accepted by me)
-    const available = allJobs.filter(
-      job => job.status === 'posted' || (job.acceptedBy === user.id && job.status !== 'completed')
+    const available = normalizedJobs.filter(job =>
+      job.status === 'posted' || (job.status === 'applied' && job.appliedBy === user.id)
     );
     setAvailableJobs(available);
 
     // My accepted jobs
-    const my = allJobs.filter(job => job.acceptedBy === user.id);
+    const my = normalizedJobs.filter(job => job.acceptedBy === user.id && job.status !== 'cancelled');
     setMyJobs(my);
   };
 
-  const handleAcceptJob = (jobId: string) => {
+  const refreshPayments = () => {
+    setPaymentRecords(getPayments());
+  };
+
+  const pushFlash = (text: string, type: 'success' | 'error' = 'success') => {
+    setFlashMessage({ text, type });
+    window.setTimeout(() => {
+      setFlashMessage(prev => (prev?.text === text ? null : prev));
+    }, 3000);
+  };
+
+  const handleApplyJob = (jobId: string) => {
     const allJobs: Job[] = JSON.parse(localStorage.getItem('jobs') || '[]');
     const jobIndex = allJobs.findIndex(j => j.id === jobId);
     
@@ -116,20 +174,23 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
         alert('Please confirm you have the required tools before accepting.');
         return;
       }
-      allJobs[jobIndex].status = 'accepted';
-      allJobs[jobIndex].acceptedBy = user.id;
-      allJobs[jobIndex].acceptedByName = user.name;
+      allJobs[jobIndex].status = 'applied';
+      allJobs[jobIndex].appliedBy = user.id;
+      allJobs[jobIndex].appliedByName = user.name;
+      allJobs[jobIndex].labourDecision = 'pending';
       localStorage.setItem('jobs', JSON.stringify(allJobs));
+      refreshPayments();
       loadData();
       pushNotification({
         id: `N-${Date.now()}`,
         userRole: 'Farmer',
-        title: 'Labour accepted job',
-        message: `Job accepted by ${user.name}`,
+        title: 'Labour applied for job',
+        message: `New application from ${user.name}`,
         type: 'ActionRequired',
         read: false,
         timestamp: new Date().toLocaleString()
       });
+      pushFlash('Application sent to farmer.');
     }
   };
 
@@ -140,16 +201,98 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
     if (jobIndex !== -1) {
       allJobs[jobIndex].status = 'completed';
       localStorage.setItem('jobs', JSON.stringify(allJobs));
+      const payment = findPaymentByJob(jobId);
+      if (payment) {
+        markWorkCompleted(payment.id);
+        refreshPayments();
+      }
       loadData();
+      pushFlash('Work marked as completed.');
+    }
+  };
+
+  const handleStartWork = (jobId: string) => {
+    const payment = findPaymentByJob(jobId);
+    if (payment) {
+      markWorkStarted(payment.id);
+      refreshPayments();
+      const allJobs: Job[] = JSON.parse(localStorage.getItem('jobs') || '[]');
+      const jobIndex = allJobs.findIndex(j => j.id === jobId);
+      if (jobIndex !== -1) {
+        allJobs[jobIndex].status = 'in_progress';
+        localStorage.setItem('jobs', JSON.stringify(allJobs));
+      }
+      loadData();
+      pushFlash('Work started.');
+    }
+  };
+
+  const handleAcceptAssignment = (jobId: string) => {
+    const allJobs: Job[] = JSON.parse(localStorage.getItem('jobs') || '[]');
+    const jobIndex = allJobs.findIndex(j => j.id === jobId);
+    if (jobIndex !== -1) {
+      allJobs[jobIndex].labourDecision = 'accepted';
+      localStorage.setItem('jobs', JSON.stringify(allJobs));
+      loadData();
+      pushFlash('Job request accepted.');
+      pushNotification({
+        id: `N-${Date.now()}`,
+        userRole: 'Farmer',
+        title: 'Labour confirmed job',
+        message: `${user.name} confirmed the assignment.`,
+        type: 'Info',
+        read: false,
+        timestamp: new Date().toLocaleString()
+      });
+    }
+  };
+
+  const handleRejectAssignment = (jobId: string) => {
+    const allJobs: Job[] = JSON.parse(localStorage.getItem('jobs') || '[]');
+    const jobIndex = allJobs.findIndex(j => j.id === jobId);
+    if (jobIndex !== -1) {
+      allJobs[jobIndex] = {
+        ...allJobs[jobIndex],
+        status: 'posted',
+        appliedBy: undefined,
+        appliedByName: undefined,
+        acceptedBy: undefined,
+        acceptedByName: undefined,
+        labourDecision: undefined
+      };
+      localStorage.setItem('jobs', JSON.stringify(allJobs));
+      loadData();
+      pushFlash('Job request declined.');
+      pushNotification({
+        id: `N-${Date.now()}`,
+        userRole: 'Farmer',
+        title: 'Labour declined job',
+        message: `${user.name} declined the assignment.`,
+        type: 'Warning',
+        read: false,
+        timestamp: new Date().toLocaleString()
+      });
     }
   };
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'posted': return 'bg-blue-100 text-blue-800';
-      case 'accepted': return 'bg-green-100 text-green-800';
-      case 'completed': return 'bg-gray-100 text-gray-800';
-      default: return 'bg-gray-100 text-gray-800';
+      case 'posted':
+        return 'bg-blue-100 text-blue-800';
+      case 'applied':
+        return 'bg-purple-100 text-purple-800';
+      case 'agreement_locked':
+        return 'bg-green-100 text-green-800';
+      case 'advance_paid':
+        return 'bg-teal-100 text-teal-800';
+      case 'in_progress':
+        return 'bg-yellow-100 text-yellow-800';
+      case 'completed':
+        return 'bg-gray-100 text-gray-800';
+      case 'cancelled':
+        return 'bg-red-100 text-red-800';
+      default:
+        return 'bg-gray-100 text-gray-800';
     }
   };
 
@@ -163,16 +306,33 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
   const villages = ['All', ...Array.from(new Set(availableJobs.map(j => j.location)))];
   const workTypes = ['All', 'Ploughing', 'Sowing', 'Harvesting', 'Weeding', 'Irrigation', 'Pesticide Spraying'];
 
-  const earnings = myJobs
-    .filter(j => j.status === 'completed')
-    .reduce((sum, job) => sum + job.payment, 0);
+  const earnings = paymentRecords
+    .filter(p => p.flow === 'labour' && p.labourerId === user.id && p.status === 'released')
+    .reduce((sum, payment) => sum + payment.amountTotal, 0);
+
+  const advanceReceived = paymentRecords
+    .filter(p =>
+      p.flow === 'labour' &&
+      p.labourerId === user.id &&
+      ['advance_paid', 'held', 'completed', 'released'].includes(p.status)
+    )
+    .reduce((sum, payment) => sum + (payment.advanceAmount || 0), 0);
+
+  const balancePending = paymentRecords
+    .filter(p => p.flow === 'labour' && p.labourerId === user.id && p.status === 'completed')
+    .reduce((sum, payment) => sum + (payment.balanceAmount || 0), 0);
 
   const stats = {
     available: availableJobs.filter(j => j.status === 'posted').length,
-    accepted: myJobs.filter(j => j.status === 'accepted').length,
+    accepted: myJobs.filter(j => ['agreement_locked', 'advance_paid', 'in_progress'].includes(j.status)).length,
     completed: myJobs.filter(j => j.status === 'completed').length,
     earnings: earnings
   };
+
+  const incomingRequests = myJobs.filter(
+    job => ['agreement_locked', 'advance_paid'].includes(job.status) && job.labourDecision === 'pending'
+  );
+  const activeJobs = myJobs.filter(job => job.labourDecision !== 'pending');
 
   const availableSkills = ['Ploughing', 'Sowing', 'Harvesting', 'Weeding', 'Irrigation', 'Pesticide Spraying'];
   const completedJobs = myJobs.filter(j => j.status === 'completed');
@@ -236,11 +396,14 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
       voiceAssist: 'Voice assistance',
       elderlyUI: 'Elderly-friendly UI',
       on: 'On',
-      off: 'Off'
-      ,
-      statusPosted: 'posted',
-      statusAccepted: 'accepted',
-      statusCompleted: 'completed',
+      off: 'Off',
+      statusPosted: 'Posted',
+      statusApplied: 'Applied',
+      statusAgreement: 'Agreement Locked',
+      statusAdvancePaid: 'Advance Paid',
+      statusInProgress: 'In Progress',
+      statusCompleted: 'Completed',
+      statusCancelled: 'Cancelled',
       markCompleted: 'Mark as Completed',
       farmerLabel: 'Farmer',
       fromCompleted: 'From {count} completed jobs'
@@ -293,11 +456,14 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
       voiceAssist: 'వాయిస్ సహాయం',
       elderlyUI: 'వృద్ధుల అనుకూల UI',
       on: 'ఆన్',
-      off: 'ఆఫ్'
-      ,
+      off: 'ఆఫ్',
       statusPosted: 'పోస్ట్ చేసినవి',
-      statusAccepted: 'అంగీకరించబడింది',
+      statusApplied: 'దరఖాస్తు చేశారు',
+      statusAgreement: 'అంగీకారం లాక్',
+      statusAdvancePaid: 'అడ్వాన్స్ చెల్లించారు',
+      statusInProgress: 'పని జరుగుతోంది',
       statusCompleted: 'పూర్తయింది',
+      statusCancelled: 'రద్దు',
       markCompleted: 'పూర్తయిందిగా గుర్తించండి',
       farmerLabel: 'రైతు',
       fromCompleted: '{count} పూర్తయిన పనుల నుండి'
@@ -350,11 +516,14 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
       voiceAssist: 'वॉइस सहायता',
       elderlyUI: 'वरिष्ठों के लिए UI',
       on: 'चालू',
-      off: 'बंद'
-      ,
+      off: 'बंद',
       statusPosted: 'पोस्ट किया गया',
-      statusAccepted: 'स्वीकृत',
+      statusApplied: 'आवेदन किया',
+      statusAgreement: 'समझौता लॉक',
+      statusAdvancePaid: 'अग्रिम भुगतान',
+      statusInProgress: 'कार्य प्रगति पर',
       statusCompleted: 'पूरा हुआ',
+      statusCancelled: 'रद्द किया गया',
       markCompleted: 'पूर्ण के रूप में चिन्हित करें',
       farmerLabel: 'किसान',
       fromCompleted: '{count} पूरे हुए कामों से'
@@ -368,18 +537,22 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
     localStorage.setItem('paymentStates', JSON.stringify(next));
   };
 
-  const getPaymentState = (jobId: string, amount: number) => {
-    const existing = paymentStates[jobId];
+  const getPaymentKey = (jobId: string) => `job:${jobId}`;
+
+  const getPaymentState = (paymentKey: string, amount: number) => {
+    const existing = paymentStates[paymentKey];
     if (existing) return existing;
     return {
-      jobId,
+      paymentKey,
+      entityType: 'job',
+      entityId: paymentKey.split(':')[1],
       workCompletedByLabour: false,
       farmerSatisfaction: null,
       finalPayableAmount: amount,
       revisedAmount: null,
       revisedReason: null,
       qrGenerated: false,
-      qrRef: `QR-${jobId}`,
+      qrRef: `QR-${paymentKey}`,
       paymentStatus: 'unpaid',
       negotiationStatus: 'pending_labour'
     };
@@ -424,8 +597,12 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
 
   const getStatusLabel = (status: string) => {
     if (status === 'posted') return labels.statusPosted;
-    if (status === 'accepted') return labels.statusAccepted;
+    if (status === 'applied') return labels.statusApplied;
+    if (status === 'agreement_locked' || status === 'accepted') return labels.statusAgreement;
+    if (status === 'advance_paid') return labels.statusAdvancePaid;
+    if (status === 'in_progress') return labels.statusInProgress;
     if (status === 'completed') return labels.statusCompleted;
+    if (status === 'cancelled') return labels.statusCancelled;
     return status;
   };
 
@@ -438,7 +615,9 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
         name: profileForm.name,
         phone: profileForm.phone,
         village: profileForm.village,
-        skills: profileForm.skills
+        skills: profileForm.skills,
+        dailyWage: profileForm.dailyWage,
+        availability: profileForm.availability
       };
       localStorage.setItem('users', JSON.stringify(allUsers));
       localStorage.setItem('currentUser', JSON.stringify(allUsers[idx]));
@@ -474,9 +653,9 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen app-shell dashboard-shell">
       {/* Header */}
-      <header className="bg-white shadow-sm">
+        <header className="bg-white shadow-sm relative z-30 overflow-visible">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="bg-orange-600 p-2 rounded-lg">
@@ -503,11 +682,11 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
               <p className="text-sm text-gray-600">👷 {labels.role}</p>
             </div>
             <button
-              onClick={onLogout}
-              className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-              title="Logout"
+              onClick={handleLogout}
+              className="px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
             >
-              <LogOut className="w-5 h-5" />
+              <LogOut className="w-4 h-4" />
+              Logout
             </button>
           </div>
         </div>
@@ -603,6 +782,17 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 py-6">
+        {flashMessage && (
+          <div
+            className={`mb-4 rounded-lg px-4 py-3 text-sm ${
+              flashMessage.type === 'success'
+                ? 'bg-green-50 text-green-700 border border-green-200'
+                : 'bg-red-50 text-red-700 border border-red-200'
+            }`}
+          >
+            {flashMessage.text}
+          </div>
+        )}
         {activeTab === 'find-work' && (
           <div className="space-y-6">
             {/* Stats */}
@@ -895,7 +1085,7 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
                                 }}
                                 className="px-3 py-1 border border-gray-200 rounded-lg"
                               >
-                                Accept
+                                Lock Offer
                               </button>
                               <button
                                 onClick={() => {
@@ -906,7 +1096,7 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
                                 }}
                                 className="px-3 py-1 border border-gray-200 rounded-lg"
                               >
-                                Reject
+                                Decline Offer
                               </button>
                               <button
                                 onClick={() => alert('Reported unfair bargain (mock).')}
@@ -922,7 +1112,8 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
                         );
                       })()}
                       {(() => {
-                        const payment = getPaymentState(job.id, job.negotiatedPrice || job.payment);
+                        const paymentKey = getPaymentKey(job.id);
+                        const payment = getPaymentState(paymentKey, job.negotiatedPrice || job.payment);
                         return (
                           <div className="mt-3 border border-gray-200 rounded-lg p-3 text-sm">
                             <p className="font-medium mb-1">On-site Completion & QR Payment</p>
@@ -936,11 +1127,11 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
                               <button
                                 onClick={() => {
                                   const next = { ...paymentStates };
-                                  next[job.id] = {
+                                  next[paymentKey] = {
                                     ...payment,
                                     workCompletedByLabour: true,
                                     qrGenerated: true,
-                                    qrRef: `QR-${job.id}`,
+                                    qrRef: `QR-${paymentKey}`,
                                     negotiationStatus: 'pending_farmer'
                                   };
                                   savePaymentStates(next);
@@ -957,7 +1148,7 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
                                   <button
                                     onClick={() => {
                                       const next = { ...paymentStates };
-                                      next[job.id] = {
+                                      next[paymentKey] = {
                                         ...payment,
                                         finalPayableAmount: payment.revisedAmount,
                                         negotiationStatus: 'agreed'
@@ -1006,12 +1197,28 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
                               <p className="mt-2 text-xs text-gray-500">Tools will be provided at work location.</p>
                             )}
                           </div>
-                          <button
-                            onClick={() => handleAcceptJob(job.id)}
-                            className="w-full bg-orange-600 text-white py-2 rounded-lg hover:bg-orange-700 transition-colors font-medium"
-                          >
-                            Accept Job
-                          </button>
+                          {(() => {
+                            const key = `job:${job.id}`;
+                            const neg = getNegotiation(key, job.payment);
+                            const canAccept = neg.status === 'agreed';
+                            return canAccept ? (
+                              <button
+                                onClick={() => handleApplyJob(job.id)}
+                                className="w-full bg-orange-600 text-white py-3 rounded-lg hover:bg-orange-700 transition-colors font-medium"
+                              >
+                                Apply for Job
+                              </button>
+                            ) : (
+                              <div className="text-xs text-gray-600">
+                                Apply is available after negotiation is agreed.
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      )}
+                      {job.status === 'applied' && job.appliedBy === user.id && (
+                        <div className="mt-3 text-xs text-gray-500">
+                          Application sent. Waiting for farmer response.
                         </div>
                       )}
                     </div>
@@ -1026,7 +1233,47 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
           <div className="space-y-6">
             <div className="bg-white rounded-lg shadow-sm p-6">
               <h2 className="text-xl font-bold text-gray-900 mb-4">{labels.myAccepted}</h2>
-              {myJobs.length === 0 ? (
+              {incomingRequests.length > 0 && (
+                <div className="mb-6 border border-orange-200 rounded-lg p-4 bg-orange-50">
+                  <h3 className="text-sm font-semibold text-orange-800 mb-3">Incoming Job Requests</h3>
+                  <div className="space-y-3">
+                    {incomingRequests.map(job => {
+                      const payment = paymentRecords.find(p => p.jobId === job.id) || null;
+                      const agreedPrice = job.negotiatedPrice || job.payment;
+                      const advanceAmount = payment?.advanceAmount ?? Math.round(agreedPrice * 0.4);
+                      return (
+                        <div key={job.id} className="bg-white border border-orange-200 rounded-lg p-3">
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <p className="font-medium text-gray-900">{job.workType}</p>
+                              <p className="text-xs text-gray-600">{job.location} • {job.date}</p>
+                              <p className="text-xs text-gray-600">Advance: ₹{advanceAmount}</p>
+                            </div>
+                            <span className={`px-2 py-1 rounded-full text-xs ${getStatusColor(job.status)}`}>
+                              {getStatusLabel(job.status)}
+                            </span>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <button
+                              onClick={() => handleAcceptAssignment(job.id)}
+                              className="px-4 py-3 bg-orange-600 text-white rounded-lg"
+                            >
+                              Accept
+                            </button>
+                            <button
+                              onClick={() => handleRejectAssignment(job.id)}
+                              className="px-4 py-3 border border-gray-200 rounded-lg"
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {activeJobs.length === 0 ? (
                 <div className="text-center py-8 text-gray-500">
                   <Briefcase className="w-12 h-12 mx-auto mb-3 text-gray-400" />
                   <p>{labels.noAccepted}</p>
@@ -1039,7 +1286,9 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {myJobs.map(job => (
+                  {activeJobs.map(job => {
+                    const payment = paymentRecords.find(p => p.jobId === job.id) || null;
+                    return (
                     <div key={job.id} className="border border-gray-200 rounded-lg p-4">
                       <div className="flex items-start justify-between mb-3">
                         <div className="flex-1">
@@ -1074,19 +1323,52 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
                               <Phone className="w-4 h-4" />
                               <span>{job.farmerPhone}</span>
                             </div>
+                            <div className="mt-2 flex items-center gap-2 text-xs">
+                              <span className={`px-2 py-1 rounded-full ${getPaymentBadgeTone(payment)}`}>
+                                {getPaymentStatusLabel(payment)}
+                              </span>
+                              {payment?.status === 'pending' && (
+                                <span className="text-gray-500">Waiting for advance payment</span>
+                              )}
+                              {payment?.status === 'completed' && (
+                                <span className="text-gray-500">Balance pending from farmer</span>
+                              )}
+                              {payment?.status === 'released' && (
+                                <span className="text-green-700">Payment received</span>
+                              )}
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-gray-700">
+                              <div className="border border-gray-200 rounded-lg px-3 py-2">
+                                <div className="text-gray-500">Advance received</div>
+                                <div className="font-medium">₹{payment?.advanceAmount || 0}</div>
+                              </div>
+                              <div className="border border-gray-200 rounded-lg px-3 py-2">
+                                <div className="text-gray-500">Balance pending</div>
+                                <div className="font-medium">₹{payment?.balanceAmount || 0}</div>
+                              </div>
+                            </div>
                           </div>
                         </div>
                       </div>
-                      {job.status === 'accepted' && (
+                      {job.status === 'advance_paid' && payment?.status === 'advance_paid' && (
+                        <button
+                          onClick={() => handleStartWork(job.id)}
+                          className="w-full bg-orange-600 text-white py-3 rounded-lg hover:bg-orange-700 transition-colors font-medium"
+                        >
+                          Start Work
+                        </button>
+                      )}
+                      {job.status === 'in_progress' && payment?.status === 'held' && (
                         <button
                           onClick={() => handleCompleteJob(job.id)}
-                          className="w-full bg-green-600 text-white py-2 rounded-lg hover:bg-green-700 transition-colors font-medium"
+                          className="w-full bg-green-600 text-white py-3 rounded-lg hover:bg-green-700 transition-colors font-medium"
                         >
                           {labels.markCompleted}
                         </button>
                       )}
                     </div>
-                  ))}
+                  );
+                  })}
                 </div>
               )}
             </div>
@@ -1096,6 +1378,10 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
               <h3 className="text-lg font-semibold text-gray-900 mb-2">{labels.totalEarnings}</h3>
               <p className="text-4xl font-bold text-orange-600">₹{earnings}</p>
               <p className="text-sm text-gray-600 mt-2">{labels.fromCompleted.replace('{count}', String(stats.completed))}</p>
+              <div className="mt-3 text-sm text-gray-700 space-y-1">
+                <div>Advance received: ₹{advanceReceived}</div>
+                <div>Balance pending: ₹{balancePending}</div>
+              </div>
             </div>
           </div>
         )}
@@ -1184,17 +1470,39 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
               <h2 className="text-xl font-bold text-gray-900 mb-4">{labels.earningsSummary}</h2>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
                 <div className="border border-gray-200 rounded-lg p-4">
-                  <p className="text-gray-600">Daily</p>
-                  <p className="text-2xl font-bold text-gray-900">₹1,200</p>
+                  <p className="text-gray-600">Advance received</p>
+                  <p className="text-2xl font-bold text-gray-900">₹{advanceReceived}</p>
                 </div>
                 <div className="border border-gray-200 rounded-lg p-4">
-                  <p className="text-gray-600">Weekly</p>
-                  <p className="text-2xl font-bold text-gray-900">₹5,400</p>
+                  <p className="text-gray-600">Balance pending</p>
+                  <p className="text-2xl font-bold text-gray-900">₹{balancePending}</p>
                 </div>
                 <div className="border border-gray-200 rounded-lg p-4">
-                  <p className="text-gray-600">Monthly</p>
-                  <p className="text-2xl font-bold text-gray-900">₹21,800</p>
+                  <p className="text-gray-600">Total earnings</p>
+                  <p className="text-2xl font-bold text-gray-900">₹{earnings}</p>
                 </div>
+              </div>
+              <div className="mt-4 border border-gray-200 rounded-lg p-4">
+                <h3 className="font-semibold text-gray-900 mb-2">Payment History</h3>
+                {paymentRecords.filter(p => p.labourerId === user.id).length === 0 ? (
+                  <p className="text-sm text-gray-500">No payment records yet.</p>
+                ) : (
+                  <div className="space-y-2 text-sm">
+                    {paymentRecords
+                      .filter(p => p.labourerId === user.id)
+                      .map(payment => (
+                        <div key={payment.id} className="flex items-center justify-between border border-gray-200 rounded-lg px-3 py-2">
+                          <div>
+                            <p className="font-medium text-gray-900">{payment.jobId || payment.id}</p>
+                            <p className="text-xs text-gray-500">Total: ₹{payment.amountTotal}</p>
+                          </div>
+                          <span className={`text-xs px-2 py-1 rounded-full ${getPaymentBadgeTone(payment)}`}>
+                            {getPaymentStatusLabel(payment)}
+                          </span>
+                        </div>
+                      ))}
+                  </div>
+                )}
               </div>
               <div className="mt-4 flex items-center gap-2 text-sm text-gray-700">
                 <BellRing className="w-4 h-4 text-orange-600" />
@@ -1292,6 +1600,38 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
                 ) : (
                   <div className="px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg">
                     {profileForm.village}
+                  </div>
+                )}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Daily wage (₹)</label>
+                {isEditingProfile ? (
+                  <input
+                    type="number"
+                    value={profileForm.dailyWage}
+                    onChange={e => setProfileForm({ ...profileForm, dailyWage: Number(e.target.value) })}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg"
+                  />
+                ) : (
+                  <div className="px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg">
+                    ₹{profileForm.dailyWage}
+                  </div>
+                )}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Availability</label>
+                {isEditingProfile ? (
+                  <label className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg">
+                    <input
+                      type="checkbox"
+                      checked={profileForm.availability}
+                      onChange={e => setProfileForm({ ...profileForm, availability: e.target.checked })}
+                    />
+                    {profileForm.availability ? 'Available' : 'Unavailable'}
+                  </label>
+                ) : (
+                  <div className="px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg">
+                    {profileForm.availability ? 'Available' : 'Unavailable'}
                   </div>
                 )}
               </div>
@@ -1566,3 +1906,4 @@ export function LabourerDashboard({ user, onLogout }: LabourerDashboardProps) {
     </div>
   );
 }
+

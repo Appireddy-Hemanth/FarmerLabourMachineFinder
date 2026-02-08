@@ -1,21 +1,43 @@
-import { useState, useEffect } from 'react';
-import { AuthPage } from './components/AuthPage';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import { FarmerDashboard } from './components/FarmerDashboard';
 import { LabourerDashboard } from './components/LabourerDashboard';
 import { MachineDashboard } from './components/MachineDashboard';
 import { AdminDashboard } from './components/AdminDashboard';
-import { Chatbot } from './components/Chatbot';
+import { LandingPage } from './pages/LandingPage';
+import { RoleSelectPage } from './pages/RoleSelectPage';
+import { LoginPage } from './pages/LoginPage';
+import { JobsPage } from './pages/JobsPage';
+import { LabourPage } from './pages/LabourPage';
+import { MachinesPage } from './pages/MachinesPage';
+import { PaymentsPage } from './pages/PaymentsPage';
+import { ProfilePage } from './pages/ProfilePage';
+import { HelpPage } from './pages/HelpPage';
+import { AppLayout } from './layouts/AppLayout';
+import { ProtectedRoute } from './routes/ProtectedRoute';
+import { AuthProvider, useAuth } from './state/auth';
 
 export interface User {
   id: string;
   name: string;
   role: 'farmer' | 'labourer' | 'machine_owner' | 'admin';
   phone: string;
+  email?: string;
   village: string;
   password: string;
   skills?: string[];
   machines?: Machine[];
+  dailyWage?: number;
+  availability?: boolean;
 }
+
+export type JobStatus =
+  | 'posted'
+  | 'applied'
+  | 'agreement_locked'
+  | 'advance_paid'
+  | 'in_progress'
+  | 'completed'
+  | 'cancelled';
 
 export interface Job {
   id: string;
@@ -28,9 +50,12 @@ export interface Job {
   date: string;
   duration: string;
   payment: number;
-  status: 'posted' | 'accepted' | 'completed';
+  status: JobStatus;
   acceptedBy?: string;
   acceptedByName?: string;
+  appliedBy?: string;
+  appliedByName?: string;
+  labourDecision?: 'pending' | 'accepted' | 'rejected';
   description?: string;
   postedAt?: number;
   negotiatedPrice?: number;
@@ -50,6 +75,7 @@ export interface Machine {
   machineType: string;
   price: number;
   priceUnit: 'hour' | 'day';
+  deposit: number;
   availability: boolean;
   description?: string;
 }
@@ -68,186 +94,137 @@ export interface MachineRequest {
   status: 'pending' | 'accepted' | 'completed';
 }
 
-function App() {
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
 
-  useEffect(() => {
-    // Load current user from localStorage
-    const savedUser = localStorage.getItem('currentUser');
-    if (savedUser) {
-      setCurrentUser(JSON.parse(savedUser));
-    }
-
-    // Initialize with demo data if first time
-    const users = localStorage.getItem('users');
-    if (!users) {
-      initializeDemoData();
-    } else {
-      // Ensure admin demo account exists
-      const parsed: User[] = JSON.parse(users);
-      const hasAdmin = parsed.some(u => u.role === 'admin');
-      if (!hasAdmin) {
-        parsed.push({
-          id: '5',
-          name: 'Admin Panel',
-          role: 'admin',
-          phone: '9000000000',
-          village: 'HQ',
-          password: 'admin123'
-        });
-        localStorage.setItem('users', JSON.stringify(parsed));
-      }
-    }
-  }, []);
-
-  const initializeDemoData = () => {
-    // Demo users
-    const demoUsers: User[] = [
-      {
-        id: '1',
-        name: 'Ravi Kumar',
-        role: 'farmer',
-        phone: '9876543210',
-        village: 'Anantapur',
-        password: 'farmer123'
-      },
-      {
-        id: '2',
-        name: 'Suresh Reddy',
-        role: 'labourer',
-        phone: '9876543211',
-        village: 'Anantapur',
-        password: 'labourer123',
-        skills: ['Ploughing', 'Harvesting', 'Sowing']
-      },
-      {
-        id: '3',
-        name: 'Lakshmi Devi',
-        role: 'labourer',
-        phone: '9876543212',
-        village: 'Kurnool',
-        password: 'labourer123',
-        skills: ['Harvesting', 'Weeding']
-      },
-      {
-        id: '4',
-        name: 'Prasad Rao',
-        role: 'machine_owner',
-        phone: '9876543213',
-        village: 'Anantapur',
-        password: 'machine123'
-      },
-      {
-        id: '5',
-        name: 'Admin Panel',
-        role: 'admin',
-        phone: '9000000000',
-        village: 'HQ',
-        password: 'admin123'
-      }
-    ];
-
-    // Demo jobs
-    const demoJobs: Job[] = [
-      {
-        id: '1',
-        farmerId: '1',
-        farmerName: 'Ravi Kumar',
-        farmerVillage: 'Anantapur',
-        farmerPhone: '9876543210',
-        workType: 'Ploughing',
-        location: 'Anantapur',
-        date: '2026-02-10',
-        duration: '2 days',
-        payment: 2000,
-        status: 'posted',
-        description: 'Need ploughing for 5 acres of land'
-        ,
-        postedAt: Date.now() - 1000 * 60 * 60 * 8
-      },
-      {
-        id: '2',
-        farmerId: '1',
-        farmerName: 'Ravi Kumar',
-        farmerVillage: 'Anantapur',
-        farmerPhone: '9876543210',
-        workType: 'Harvesting',
-        location: 'Anantapur',
-        date: '2026-02-15',
-        duration: '3 days',
-        payment: 3500,
-        status: 'posted',
-        description: 'Harvesting cotton crop'
-        ,
-        postedAt: Date.now() - 1000 * 60 * 60 * 2
-      }
-    ];
-
-    // Demo machines
-    const demoMachines: Machine[] = [
-      {
-        id: '1',
-        ownerId: '4',
-        ownerName: 'Prasad Rao',
-        ownerVillage: 'Anantapur',
-        ownerPhone: '9876543213',
-        machineType: 'Tractor',
-        price: 500,
-        priceUnit: 'hour',
-        availability: true,
-        description: 'John Deere 5050D, 50 HP'
-      },
-      {
-        id: '2',
-        ownerId: '4',
-        ownerName: 'Prasad Rao',
-        ownerVillage: 'Anantapur',
-        ownerPhone: '9876543213',
-        machineType: 'Harvester',
-        price: 3000,
-        priceUnit: 'day',
-        availability: true,
-        description: 'Combine harvester for wheat and rice'
-      }
-    ];
-
-    localStorage.setItem('users', JSON.stringify(demoUsers));
-    localStorage.setItem('jobs', JSON.stringify(demoJobs));
-    localStorage.setItem('machines', JSON.stringify(demoMachines));
-    localStorage.setItem('machineRequests', JSON.stringify([]));
-  };
-
-  const handleLogin = (user: User) => {
-    setCurrentUser(user);
-    localStorage.setItem('currentUser', JSON.stringify(user));
-  };
-
-  const handleLogout = () => {
-    setCurrentUser(null);
-    localStorage.removeItem('currentUser');
-  };
-
+function DashboardGate({ role, children }: { role: User['role']; children: React.ReactElement }) {
+  const { currentUser } = useAuth();
   if (!currentUser) {
-    return <AuthPage onLogin={handleLogin} />;
+    return <Navigate to="/login" replace />;
   }
-
   return (
-    <div className="min-h-screen bg-gray-50">
-      {currentUser.role === 'farmer' && (
-        <FarmerDashboard user={currentUser} onLogout={handleLogout} />
-      )}
-      {currentUser.role === 'labourer' && (
-        <LabourerDashboard user={currentUser} onLogout={handleLogout} />
-      )}
-      {currentUser.role === 'machine_owner' && (
-        <MachineDashboard user={currentUser} onLogout={handleLogout} />
-      )}
-      {currentUser.role === 'admin' && (
-        <AdminDashboard user={currentUser} onLogout={handleLogout} />
-      )}
-      <Chatbot currentUser={currentUser} />
-    </div>
+    <ProtectedRoute role={role}>
+      {children}
+    </ProtectedRoute>
+  );
+}
+
+function RequireAuth({ children }: { children: React.ReactElement }) {
+  const { currentUser } = useAuth();
+  if (!currentUser) {
+    return <Navigate to="/login" replace />;
+  }
+  return children;
+}
+
+function FarmerRoute() {
+  const { currentUser } = useAuth();
+  if (!currentUser) return null;
+  return <FarmerDashboard user={currentUser} />;
+}
+
+function LabourRoute() {
+  const { currentUser } = useAuth();
+  if (!currentUser) return null;
+  return <LabourerDashboard user={currentUser} />;
+}
+
+function MachineRoute() {
+  const { currentUser } = useAuth();
+  if (!currentUser) return null;
+  return <MachineDashboard user={currentUser} />;
+}
+
+function AdminRoute() {
+  const { currentUser } = useAuth();
+  if (!currentUser) return null;
+  return <AdminDashboard user={currentUser} />;
+}
+function App() {
+  return (
+    <AuthProvider>
+      <Routes>
+        <Route element={<AppLayout />}>
+          <Route path="/" element={<LandingPage />} />
+          <Route path="/select-role" element={<RoleSelectPage />} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route
+            path="/jobs"
+            element={
+              <RequireAuth>
+                <JobsPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/labour"
+            element={
+              <RequireAuth>
+                <LabourPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/machines"
+            element={
+              <RequireAuth>
+                <MachinesPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/payments"
+            element={
+              <RequireAuth>
+                <PaymentsPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/profile"
+            element={
+              <RequireAuth>
+                <ProfilePage />
+              </RequireAuth>
+            }
+          />
+          <Route path="/help" element={<HelpPage />} />
+          <Route
+            path="/farmer"
+            element={
+              <DashboardGate role="farmer">
+                <FarmerRoute />
+              </DashboardGate>
+            }
+          />
+          <Route
+            path="/labour/dashboard"
+            element={
+              <DashboardGate role="labourer">
+                <LabourRoute />
+              </DashboardGate>
+            }
+          />
+          <Route
+            path="/machine"
+            element={
+              <DashboardGate role="machine_owner">
+                <MachineRoute />
+              </DashboardGate>
+            }
+          />
+          <Route
+            path="/admin"
+            element={
+              <DashboardGate role="admin">
+                <AdminRoute />
+              </DashboardGate>
+            }
+          />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Route>
+      </Routes>
+    </AuthProvider>
   );
 }
 
 export default App;
+

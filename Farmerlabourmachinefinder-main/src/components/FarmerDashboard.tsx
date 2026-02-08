@@ -1,15 +1,32 @@
 import { useState, useEffect } from 'react';
 import { useRef } from 'react';
 import { User, Job, Machine, MachineRequest } from '../App';
-import { LogOut, Plus, Briefcase, Tractor, User as UserIcon, MapPin, Phone, Calendar, DollarSign, Clock, Sparkles, CloudRain, Filter } from 'lucide-react';
+import { Plus, Briefcase, Tractor, User as UserIcon, MapPin, Phone, Calendar, DollarSign, Clock, Sparkles, CloudRain, Filter, LogOut } from 'lucide-react';
 import { NotificationBell, NotificationItem } from './NotificationBell';
+import { useAuth } from '../state/auth';
+import { useNavigate } from 'react-router-dom';
+import {
+  ensureLabourPayment,
+  ensureMachinePayment,
+  findPaymentByJob,
+  findPaymentByRequest,
+  getPaymentBadgeTone,
+  getPaymentStatusLabel,
+  getPayments,
+  markAdvancePaid,
+  markMachinePaid,
+  markRefunded,
+  markReleased,
+  PaymentRecord
+} from '../state/payments';
 
 interface FarmerDashboardProps {
   user: User;
-  onLogout: () => void;
 }
 
-export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
+export function FarmerDashboard({ user }: FarmerDashboardProps) {
+  const { logout } = useAuth();
+  const navigate = useNavigate();
   const [language, setLanguage] = useState(() => localStorage.getItem('appLanguage') || 'English');
   const [activeTab, setActiveTab] = useState<'dashboard' | 'post-job' | 'matching' | 'machines' | 'payments' | 'insights' | 'profile'>('dashboard');
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -28,9 +45,10 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
   const [cropPlan, setCropPlan] = useState('Cotton');
   const [landSize, setLandSize] = useState(5);
   const [alertItems, setAlertItems] = useState([
-    'Labour did not start on time for 1 job.',
-    'Machine idle too long in last rental.'
+    { id: 'alert-1', text: 'Labour did not start on time for 1 job.' },
+    { id: 'alert-2', text: 'Machine idle too long in last rental.' }
   ]);
+  const [flashMessage, setFlashMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [negotiations, setNegotiations] = useState<Record<string, any>>({});
   const [counterInputs, setCounterInputs] = useState<Record<string, { amount: string; reason: string }>>({});
   const [completionJobId, setCompletionJobId] = useState<string | null>(null);
@@ -43,11 +61,14 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
   const [machineComment, setMachineComment] = useState('');
   const [photoError, setPhotoError] = useState('');
   const [postWorkPhotos, setPostWorkPhotos] = useState<string[]>([]);
+  const [damageFlags, setDamageFlags] = useState<Record<string, boolean>>({});
   const [paymentStates, setPaymentStates] = useState<Record<string, any>>({});
-  const [paymentModalJobId, setPaymentModalJobId] = useState<string | null>(null);
+  const [paymentModal, setPaymentModal] = useState<{ type: 'job' | 'request'; id: string } | null>(null);
+  const [paymentRecords, setPaymentRecords] = useState<PaymentRecord[]>([]);
   const [satisfaction, setSatisfaction] = useState<'yes' | 'no' | ''>('');
   const [revisedAmount, setRevisedAmount] = useState('');
   const [revisedReason, setRevisedReason] = useState('');
+  const [paymentHistory, setPaymentHistory] = useState<Array<any>>([]);
   const beforeInputRef = useRef<HTMLInputElement | null>(null);
   const afterInputRef = useRef<HTMLInputElement | null>(null);
   const postWorkInputRef = useRef<HTMLInputElement | null>(null);
@@ -81,6 +102,11 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
   const [weatherAlert, setWeatherAlert] = useState('Rain expected tomorrow. Consider rescheduling pesticide spraying.');
   const [schemeAlert, setSchemeAlert] = useState('PM-KISAN installment window opens next week for small farmers.');
   const [productivityNote, setProductivityNote] = useState('Estimated yield up 8% if irrigation is advanced by 2 days.');
+
+  const handleLogout = () => {
+    logout();
+    navigate('/');
+  };
 
   useEffect(() => {
     const stored = localStorage.getItem(`farmerDynamic:${user.id}`);
@@ -134,6 +160,17 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
   }, []);
 
   useEffect(() => {
+    const stored = localStorage.getItem('machineDamageFlags');
+    if (stored) {
+      setDamageFlags(JSON.parse(stored));
+    }
+  }, []);
+
+  useEffect(() => {
+    setPaymentRecords(getPayments());
+  }, []);
+
+  useEffect(() => {
     setProfileForm({ name: user.name, phone: user.phone, village: user.village });
   }, [user]);
 
@@ -152,16 +189,68 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
     }
   }, [user.id]);
 
+  useEffect(() => {
+    const all = JSON.parse(localStorage.getItem('paymentRecords') || '[]');
+    const jobKeys = new Set(jobs.map(j => getPaymentKey('job', j.id)));
+    const requestKeys = new Set(machineRequests.map(r => getPaymentKey('request', r.id)));
+    const filtered = all.filter((p: any) =>
+      p.farmerId === user.id || jobKeys.has(p.jobId) || requestKeys.has(p.jobId)
+    );
+    setPaymentHistory(filtered);
+  }, [jobs, machineRequests, user.id]);
+
   const loadData = () => {
     const allJobs: Job[] = JSON.parse(localStorage.getItem('jobs') || '[]');
-    const myJobs = allJobs.filter(job => job.farmerId === user.id);
+    const payments = getPayments();
+    let jobsChanged = false;
+    const normalizedJobs = allJobs.map(job => {
+      if (job.farmerId !== user.id) return job;
+      const payment = payments.find(p => p.jobId === job.id);
+      if (!payment) return job;
+      let nextStatus = job.status;
+      if (payment.status === 'advance_paid') nextStatus = 'advance_paid';
+      if (payment.status === 'held') nextStatus = 'in_progress';
+      if (payment.status === 'completed' || payment.status === 'released') nextStatus = 'completed';
+      if (payment.status === 'refunded') nextStatus = 'cancelled';
+      if (nextStatus !== job.status) {
+        jobsChanged = true;
+        return { ...job, status: nextStatus };
+      }
+      return job;
+    });
+    if (jobsChanged) {
+      localStorage.setItem('jobs', JSON.stringify(normalizedJobs));
+    }
+    const myJobs = normalizedJobs.filter(job => job.farmerId === user.id);
     setJobs(myJobs);
+    myJobs
+      .filter(job => job.acceptedBy && ['agreement_locked', 'advance_paid', 'in_progress', 'completed'].includes(job.status))
+      .forEach(job => ensureLabourPayment(job, job.acceptedBy || ''));
 
     const allMachines: Machine[] = JSON.parse(localStorage.getItem('machines') || '[]');
     setMachines(allMachines.filter(m => m.availability));
 
     const allRequests: MachineRequest[] = JSON.parse(localStorage.getItem('machineRequests') || '[]');
-    setMachineRequests(allRequests.filter(r => r.farmerId === user.id));
+    const myRequests = allRequests.filter(r => r.farmerId === user.id);
+    setMachineRequests(myRequests);
+    myRequests
+      .filter(r => r.status !== 'pending')
+      .forEach(r => {
+        const machine = allMachines.find(m => m.id === r.machineId);
+        if (machine) ensureMachinePayment(r, machine);
+      });
+    refreshPayments();
+  };
+
+  const refreshPayments = () => {
+    setPaymentRecords(getPayments());
+  };
+
+  const pushFlash = (text: string, type: 'success' | 'error' = 'success') => {
+    setFlashMessage({ text, type });
+    window.setTimeout(() => {
+      setFlashMessage(prev => (prev?.text === text ? null : prev));
+    }, 3000);
   };
 
   const handlePostJob = (e: React.FormEvent) => {
@@ -221,6 +310,62 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
     });
     setPostWorkPhotos([]);
     setActiveTab('dashboard');
+    pushFlash('Job posted successfully.');
+  };
+
+  const updateJobRecord = (jobId: string, patch: Partial<Job>) => {
+    const allJobs: Job[] = JSON.parse(localStorage.getItem('jobs') || '[]');
+    const idx = allJobs.findIndex(j => j.id === jobId);
+    if (idx === -1) return null;
+    const next = { ...allJobs[idx], ...patch };
+    allJobs[idx] = next;
+    localStorage.setItem('jobs', JSON.stringify(allJobs));
+    return next;
+  };
+
+  const handleApproveApplicant = (jobId: string) => {
+    const job = jobs.find(j => j.id === jobId);
+    if (!job?.appliedBy) return;
+    const updated = updateJobRecord(jobId, {
+      status: 'agreement_locked',
+      acceptedBy: job.appliedBy,
+      acceptedByName: job.appliedByName,
+      labourDecision: 'pending'
+    });
+    if (updated?.acceptedBy) {
+      ensureLabourPayment(updated, updated.acceptedBy);
+    }
+    loadData();
+    refreshPayments();
+    pushFlash('Agreement locked. Pay advance to start work.');
+  };
+
+  const handleRejectApplicant = (jobId: string) => {
+    updateJobRecord(jobId, {
+      status: 'posted',
+      appliedBy: undefined,
+      appliedByName: undefined,
+      acceptedBy: undefined,
+      acceptedByName: undefined,
+      labourDecision: undefined
+    });
+    loadData();
+    pushFlash('Application rejected.');
+  };
+
+  const handleCancelJob = (jobId: string) => {
+    const updated = updateJobRecord(jobId, { status: 'cancelled' });
+    if (updated) {
+      const payment = findPaymentByJob(jobId);
+      if (payment && payment.status !== 'pending') {
+        markRefunded(payment.id);
+        refreshPayments();
+        pushFlash('Job cancelled. Refund initiated.');
+      } else {
+        pushFlash('Job cancelled.');
+      }
+    }
+    loadData();
   };
 
   const handleRequestMachine = (machine: Machine | null) => {
@@ -252,24 +397,38 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
     setMachineRequests([...machineRequests, newRequest]);
     setSelectedMachine(null);
     setMachineRequestForm({ date: '', duration: '' });
-    alert('Machine request sent successfully!');
+    pushFlash('Machine request sent successfully.');
   };
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'posted': return 'bg-blue-100 text-blue-800';
-      case 'accepted': return 'bg-green-100 text-green-800';
-      case 'completed': return 'bg-gray-100 text-gray-800';
-      case 'pending': return 'bg-yellow-100 text-yellow-800';
-      default: return 'bg-gray-100 text-gray-800';
+      case 'posted':
+        return 'bg-blue-100 text-blue-800';
+      case 'applied':
+        return 'bg-purple-100 text-purple-800';
+      case 'agreement_locked':
+        return 'bg-green-100 text-green-800';
+      case 'advance_paid':
+        return 'bg-teal-100 text-teal-800';
+      case 'in_progress':
+        return 'bg-yellow-100 text-yellow-800';
+      case 'completed':
+        return 'bg-gray-100 text-gray-800';
+      case 'cancelled':
+        return 'bg-red-100 text-red-800';
+      case 'pending':
+        return 'bg-yellow-100 text-yellow-800';
+      default:
+        return 'bg-gray-100 text-gray-800';
     }
   };
 
   const stats = {
-    posted: jobs.filter(j => j.status === 'posted').length,
-    accepted: jobs.filter(j => j.status === 'accepted').length,
+    posted: jobs.filter(j => j.status === 'posted' || j.status === 'applied').length,
+    accepted: jobs.filter(j => ['agreement_locked', 'advance_paid', 'in_progress'].includes(j.status)).length,
     completed: jobs.filter(j => j.status === 'completed').length,
   };
+  const farmerPayments = paymentRecords.filter(p => p.farmerId === user.id);
 
   const saveNegotiations = (next: Record<string, any>) => {
     setNegotiations(next);
@@ -307,21 +466,64 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
     localStorage.setItem('paymentStates', JSON.stringify(next));
   };
 
-  const getPaymentState = (jobId: string, amount: number) => {
-    const existing = paymentStates[jobId];
+  const getPaymentKey = (type: 'job' | 'request', id: string) => `${type}:${id}`;
+
+  const parseDurationQty = (duration: string) => {
+    if (!duration) return 1;
+    const match = duration.match(/(\d+(\.\d+)?)/);
+    return match ? Number(match[1]) : 1;
+  };
+
+  const getJobBaseAmount = (jobId: string) => {
+    const job = jobs.find(j => j.id === jobId);
+    return job?.negotiatedPrice || job?.payment || 0;
+  };
+
+  const getRequestBaseAmount = (requestId: string) => {
+    const request = machineRequests.find(r => r.id === requestId);
+    if (!request) return 0;
+    const machine = machines.find(m => m.id === request.machineId);
+    if (!machine) return 0;
+    const qty = parseDurationQty(request.duration);
+    return Math.round(machine.price * qty);
+  };
+
+  const addPaymentRecord = (record: any) => {
+    const existing = JSON.parse(localStorage.getItem('paymentRecords') || '[]');
+    const next = [record, ...existing];
+    localStorage.setItem('paymentRecords', JSON.stringify(next));
+    const jobKeys = new Set(jobs.map(j => getPaymentKey('job', j.id)));
+    const requestKeys = new Set(machineRequests.map(r => getPaymentKey('request', r.id)));
+    const filtered = next.filter((p: any) =>
+      p.farmerId === user.id || jobKeys.has(p.jobId) || requestKeys.has(p.jobId)
+    );
+    setPaymentHistory(filtered);
+  };
+
+  const getPaymentState = (paymentKey: string, amount: number) => {
+    const existing = paymentStates[paymentKey];
     if (existing) return existing;
     return {
-      jobId,
+      paymentKey,
+      entityType: paymentKey.startsWith('job:') ? 'job' : 'request',
+      entityId: paymentKey.split(':')[1],
       workCompletedByLabour: false,
       farmerSatisfaction: null,
       finalPayableAmount: amount,
       revisedAmount: null,
       revisedReason: null,
       qrGenerated: false,
-      qrRef: `QR-${jobId}`,
+      qrRef: `QR-${paymentKey}`,
       paymentStatus: 'unpaid',
       negotiationStatus: 'pending_labour'
     };
+  };
+
+  const openPaymentModal = (type: 'job' | 'request', id: string) => {
+    setSatisfaction('');
+    setRevisedAmount('');
+    setRevisedReason('');
+    setPaymentModal({ type, id });
   };
 
   const fileListToBase64 = async (files: FileList | null) => {
@@ -362,7 +564,9 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
   };
 
   const saveWorkProof = () => {
-    const paymentState = completionJobId ? getPaymentState(completionJobId, 0) : null;
+    const paymentState = completionJobId
+      ? getPaymentState(getPaymentKey('job', completionJobId), getJobBaseAmount(completionJobId))
+      : null;
     if (completionJobId && paymentState && paymentState.paymentStatus !== 'paid') {
       alert('Payment must be completed before finalizing the job.');
       return;
@@ -428,7 +632,9 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
     }
 
     if (completionRequestId) {
-      const paymentStateForReq = completionRequestId ? getPaymentState(completionRequestId, 0) : null;
+      const paymentStateForReq = completionRequestId
+        ? getPaymentState(getPaymentKey('request', completionRequestId), getRequestBaseAmount(completionRequestId))
+        : null;
       if (paymentStateForReq && paymentStateForReq.paymentStatus !== 'paid') {
         alert('Payment must be completed before finalizing the job.');
         return;
@@ -505,11 +711,6 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
   const attachmentOptions = ['Plough', 'Harrow', 'Seeder', 'Sprayer'];
 
 
-  const payments = [
-    { id: 'p1', job: 'Ploughing', amount: 2000, status: 'Paid', date: '2026-02-03' },
-    { id: 'p2', job: 'Harvesting', amount: 3500, status: 'Pending', date: '2026-02-10' }
-  ];
-
   const expenseByCrop = [
     { crop: 'Cotton', amount: 14500 },
     { crop: 'Paddy', amount: 9800 },
@@ -576,11 +777,14 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
       refreshInsights: 'Refresh Insights',
       refreshSchemes: 'Refresh Schemes',
       filters: 'Filters',
-      mapTitle: 'Real-time Map (Mock)'
-      ,
-      statusPosted: 'posted',
-      statusAccepted: 'accepted',
-      statusCompleted: 'completed',
+      mapTitle: 'Real-time Map (Mock)',
+      statusPosted: 'Posted',
+      statusApplied: 'Labour Applied',
+      statusAgreement: 'Agreement Locked',
+      statusAdvancePaid: 'Advance Paid',
+      statusInProgress: 'In Progress',
+      statusCompleted: 'Completed',
+      statusCancelled: 'Cancelled',
       acceptedBy: 'Accepted by',
       completedJobsText: '{count} completed',
       noMachines: 'No machines available at the moment'
@@ -644,11 +848,14 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
       refreshInsights: 'ఇన్సైట్స్ రిఫ్రెష్',
       refreshSchemes: 'పథకాలు రిఫ్రెష్',
       filters: 'ఫిల్టర్లు',
-      mapTitle: 'రియల్-టైం మ్యాప్ (మాక్)'
-      ,
+      mapTitle: 'రియల్-టైం మ్యాప్ (మాక్)',
       statusPosted: 'పోస్ట్ చేసినవి',
-      statusAccepted: 'అంగీకరించబడింది',
+      statusApplied: 'కూలీ దరఖాస్తు చేశారు',
+      statusAgreement: 'అంగీకారం లాక్ అయింది',
+      statusAdvancePaid: 'అడ్వాన్స్ చెల్లించారు',
+      statusInProgress: 'పని జరుగుతోంది',
       statusCompleted: 'పూర్తయింది',
+      statusCancelled: 'రద్దు చేయబడింది',
       acceptedBy: 'అంగీకరించినవారు',
       completedJobsText: '{count} పూర్తయినవి',
       noMachines: 'ప్రస్తుతం యంత్రాలు లభ్యం కావు'
@@ -712,11 +919,14 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
       refreshInsights: 'इनसाइट्स रिफ्रेश',
       refreshSchemes: 'योजनाएँ रिफ्रेश',
       filters: 'फ़िल्टर',
-      mapTitle: 'रियल-टाइम मैप (मॉक)'
-      ,
+      mapTitle: 'रियल-टाइम मैप (मॉक)',
       statusPosted: 'पोस्ट किया गया',
-      statusAccepted: 'स्वीकृत',
+      statusApplied: 'श्रमिक ने आवेदन किया',
+      statusAgreement: 'समझौता लॉक',
+      statusAdvancePaid: 'अग्रिम भुगतान',
+      statusInProgress: 'कार्य प्रगति पर',
       statusCompleted: 'पूरा हुआ',
+      statusCancelled: 'रद्द किया गया',
       acceptedBy: 'स्वीकार किया',
       completedJobsText: '{count} पूरे हुए',
       noMachines: 'फिलहाल कोई मशीन उपलब्ध नहीं है'
@@ -727,8 +937,12 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
 
   const getStatusLabel = (status: string) => {
     if (status === 'posted') return labels.statusPosted;
-    if (status === 'accepted') return labels.statusAccepted;
+    if (status === 'applied') return labels.statusApplied;
+    if (status === 'agreement_locked' || status === 'accepted') return labels.statusAgreement;
+    if (status === 'advance_paid') return labels.statusAdvancePaid;
+    if (status === 'in_progress') return labels.statusInProgress;
     if (status === 'completed') return labels.statusCompleted;
+    if (status === 'cancelled') return labels.statusCancelled;
     return status;
   };
 
@@ -750,7 +964,7 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen app-shell dashboard-shell">
       {(completionJobId || completionRequestId) && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl p-6">
@@ -884,22 +1098,32 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
           </div>
         </div>
       )}
-      {paymentModalJobId && (
+      {paymentModal && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl w-full max-w-xl p-6">
             <h2 className="text-xl font-bold text-gray-900 mb-2">Satisfaction & QR Payment</h2>
             {(() => {
-              const job = jobs.find(j => j.id === paymentModalJobId);
-              const baseAmount = job?.negotiatedPrice || job?.payment || 0;
-              const state = getPaymentState(paymentModalJobId, baseAmount);
-              const nextStates = { ...paymentStates, [paymentModalJobId]: state };
-              if (!paymentStates[paymentModalJobId]) {
+              const isJob = paymentModal.type === 'job';
+              const job = isJob ? jobs.find(j => j.id === paymentModal.id) : null;
+              const request = !isJob ? machineRequests.find(r => r.id === paymentModal.id) : null;
+              const baseAmount = isJob ? (job?.negotiatedPrice || job?.payment || 0) : getRequestBaseAmount(paymentModal.id);
+              const paymentKey = getPaymentKey(paymentModal.type, paymentModal.id);
+              const state = getPaymentState(paymentKey, baseAmount);
+              const nextStates = { ...paymentStates, [paymentKey]: state };
+              if (!paymentStates[paymentKey]) {
                 savePaymentStates(nextStates);
               }
               return (
                 <div className="space-y-4 text-sm">
                   <div className="border border-gray-200 rounded-lg p-3">
-                    <p>Job: {job?.workType}</p>
+                    {isJob ? (
+                      <p>Job: {job?.workType}</p>
+                    ) : (
+                      <>
+                        <p>Machine: {request?.machineType}</p>
+                        <p>Duration: {request?.duration}</p>
+                      </>
+                    )}
                     <p>Base Amount: ₹{baseAmount}</p>
                     <p>QR Ref: {state.qrRef}</p>
                   </div>
@@ -962,7 +1186,7 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
                           revisedReason: satisfaction === 'no' ? revisedReason : null,
                           negotiationStatus: satisfaction === 'no' ? 'pending_labour' : 'agreed'
                         };
-                        next[paymentModalJobId] = updated;
+                        next[paymentKey] = updated;
                         savePaymentStates(next);
                       }}
                       className="px-3 py-2 bg-green-600 text-white rounded-lg"
@@ -971,25 +1195,39 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
                     </button>
                     <button
                       onClick={() => {
-                        const current = getPaymentState(paymentModalJobId, baseAmount);
+                        const current = getPaymentState(paymentKey, baseAmount);
                         if (current.negotiationStatus !== 'agreed') {
                           alert('Waiting for labour acceptance of revised amount.');
                           return;
                         }
+                        if (current.paymentStatus === 'paid') {
+                          alert('Payment already marked as paid.');
+                          return;
+                        }
                         const next = { ...paymentStates };
-                        next[paymentModalJobId] = {
+                        next[paymentKey] = {
                           ...current,
                           paymentStatus: 'paid',
                           paidAt: Date.now()
                         };
                         savePaymentStates(next);
+                        const finalAmount = current.finalPayableAmount ?? baseAmount;
+                        addPaymentRecord({
+                          id: `PAY-${Date.now()}`,
+                          jobId: paymentKey,
+                          amount: finalAmount,
+                          status: 'Paid',
+                          timestamp: new Date().toLocaleString(),
+                          farmerId: user.id,
+                          label: isJob ? job?.workType : `${request?.machineType} rental`
+                        });
                       }}
                       className="px-3 py-2 border border-gray-200 rounded-lg"
                     >
                       Scan QR & Mark Paid
                     </button>
                     <button
-                      onClick={() => setPaymentModalJobId(null)}
+                      onClick={() => setPaymentModal(null)}
                       className="px-3 py-2 border border-gray-200 rounded-lg"
                     >
                       Close
@@ -1002,7 +1240,7 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
         </div>
       )}
       {/* Header */}
-      <header className="bg-white shadow-sm">
+        <header className="bg-white shadow-sm relative z-30 overflow-visible">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="bg-green-600 p-2 rounded-lg">
@@ -1029,11 +1267,11 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
               <p className="text-sm text-gray-600">👨‍🌾 {labels.role}</p>
             </div>
             <button
-              onClick={onLogout}
-              className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-              title="Logout"
+              onClick={handleLogout}
+              className="px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
             >
-              <LogOut className="w-5 h-5" />
+              <LogOut className="w-4 h-4" />
+              Logout
             </button>
           </div>
         </div>
@@ -1119,6 +1357,17 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 py-6">
+        {flashMessage && (
+          <div
+            className={`mb-4 rounded-lg px-4 py-3 text-sm ${
+              flashMessage.type === 'success'
+                ? 'bg-green-50 text-green-700 border border-green-200'
+                : 'bg-red-50 text-red-700 border border-red-200'
+            }`}
+          >
+            {flashMessage.text}
+          </div>
+        )}
         {activeTab === 'dashboard' && (
           <div className="space-y-6">
             {/* Stats */}
@@ -1187,7 +1436,7 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
                   Auto-fill from last job
                 </button>
               )}
-              {jobs.length === 0 ? (
+              {jobs.filter(job => !['completed', 'cancelled'].includes(job.status)).length === 0 ? (
                 <div className="text-center py-8 text-gray-500">
                   <Briefcase className="w-12 h-12 mx-auto mb-3 text-gray-400" />
                   <p>{labels.noJobs}</p>
@@ -1200,7 +1449,21 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {jobs.map(job => (
+                  {jobs
+                    .filter(job => !['completed', 'cancelled'].includes(job.status))
+                    .map(job => {
+                    const rawPayment = paymentRecords.find(p => p.jobId === job.id) || null;
+                    const payment = job.status === 'posted' || job.status === 'applied' ? null : rawPayment;
+                    const agreedPrice = job.negotiatedPrice || job.payment;
+                    const expectedAdvance = Math.round(agreedPrice * 0.4);
+                    const advancePaid =
+                      payment && ['advance_paid', 'held', 'completed', 'released'].includes(payment.status)
+                        ? payment.advanceAmount || expectedAdvance
+                        : 0;
+                    const balancePending = payment
+                      ? payment.balanceAmount ?? Math.max(agreedPrice - advancePaid, 0)
+                      : Math.max(agreedPrice - expectedAdvance, 0);
+                    return (
                     <div key={job.id} className="border border-gray-200 rounded-lg p-4 hover:border-green-500 transition-colors">
                       <div className="flex items-start justify-between mb-3">
                         <div>
@@ -1210,6 +1473,19 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
                         <span className={`px-3 py-1 rounded-full text-xs font-medium ${getStatusColor(job.status)}`}>
                           {getStatusLabel(job.status)}
                         </span>
+                      </div>
+                      <div className="mb-3 flex items-center gap-2 text-xs">
+                        <span
+                          className={`px-2 py-1 rounded-full ${
+                            payment ? getPaymentBadgeTone(payment) : 'bg-gray-100 text-gray-700'
+                          }`}
+                        >
+                          {getPaymentStatusLabel(payment)}
+                        </span>
+                        {payment?.status === 'completed' && (
+                          <span className="text-gray-500">Balance pending — confirm completion to release</span>
+                        )}
+                        {!payment && <span className="text-gray-500">Payment not started</span>}
                       </div>
                       {(() => {
                         const key = `job:${job.id}`;
@@ -1314,7 +1590,7 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
                                 }}
                                 className="px-3 py-1 border border-gray-200 rounded-lg"
                               >
-                                Accept
+                                Lock Offer
                               </button>
                               <button
                                 onClick={() => {
@@ -1325,7 +1601,7 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
                                 }}
                                 className="px-3 py-1 border border-gray-200 rounded-lg"
                               >
-                                Reject
+                                Decline Offer
                               </button>
                               <button
                                 onClick={() => alert('Reported unfair bargain (mock).')}
@@ -1357,34 +1633,144 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
                         </div>
                         <div className="flex items-center gap-2 text-gray-600">
                           <DollarSign className="w-4 h-4" />
-                          <span>₹{job.payment}</span>
+                          <span>₹{agreedPrice}</span>
                         </div>
                       </div>
+                      {job.status === 'posted' && !job.appliedBy && (
+                        <div className="mt-3 text-xs text-gray-500">
+                          Waiting for labour response.
+                        </div>
+                      )}
+                      {job.status === 'applied' && (
+                        <div className="mt-3 border border-gray-200 rounded-lg p-3 text-sm">
+                          <p className="text-gray-700">
+                            Labour applied: <span className="font-medium">{job.appliedByName || 'Interested labour'}</span>
+                          </p>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <button
+                              onClick={() => handleApproveApplicant(job.id)}
+                              className="px-4 py-3 bg-green-600 text-white rounded-lg"
+                            >
+                              Accept
+                            </button>
+                            <button
+                              onClick={() => handleRejectApplicant(job.id)}
+                              className="px-4 py-3 border border-gray-200 rounded-lg"
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        </div>
+                      )}
                       {job.acceptedByName && (
                         <div className="mt-3 pt-3 border-t border-gray-200">
                           <p className="text-sm text-green-700">
                             {labels.acceptedBy}: <span className="font-medium">{job.acceptedByName}</span>
                           </p>
+                          {job.labourDecision === 'pending' && job.status === 'agreement_locked' && (
+                            <p className="text-xs text-gray-500 mt-1">Waiting for labour confirmation.</p>
+                          )}
                         </div>
                       )}
-                      {job.status === 'accepted' && (
-                        <div className="mt-3 flex gap-2">
+                      <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs text-gray-700">
+                        <div className="border border-gray-200 rounded-lg px-3 py-2">
+                          <div className="text-gray-500">Agreed price</div>
+                          <div className="font-medium">₹{agreedPrice}</div>
+                        </div>
+                        <div className="border border-gray-200 rounded-lg px-3 py-2">
+                          <div className="text-gray-500">{advancePaid > 0 ? 'Advance paid' : 'Advance due'}</div>
+                          <div className="font-medium">₹{advancePaid > 0 ? advancePaid : expectedAdvance}</div>
+                        </div>
+                        <div className="border border-gray-200 rounded-lg px-3 py-2">
+                          <div className="text-gray-500">Balance pending</div>
+                          <div className="font-medium">₹{balancePending}</div>
+                        </div>
+                        <div className="border border-gray-200 rounded-lg px-3 py-2">
+                          <div className="text-gray-500">Payment status</div>
+                          <div className="font-medium">{getPaymentStatusLabel(payment)}</div>
+                        </div>
+                      </div>
+                      {job.status === 'agreement_locked' && payment?.status === 'pending' && (
+                        <div className="mt-3 flex flex-wrap gap-2">
                           <button
-                            onClick={() => setPaymentModalJobId(job.id)}
-                            className="px-4 py-2 border border-gray-200 rounded-lg"
+                            onClick={() => {
+                              const updated = markAdvancePaid(payment.id, 'UPI');
+                              if (updated) {
+                                updateJobRecord(job.id, { status: 'advance_paid' });
+                                refreshPayments();
+                                loadData();
+                                pushFlash('Advance paid successfully.');
+                              }
+                            }}
+                            className="px-4 py-3 bg-green-600 text-white rounded-lg"
                           >
-                            Review & Pay
+                            Pay Advance (UPI)
                           </button>
                           <button
+                            onClick={() => {
+                              const updated = markAdvancePaid(payment.id, 'Debit Card');
+                              if (updated) {
+                                updateJobRecord(job.id, { status: 'advance_paid' });
+                                refreshPayments();
+                                loadData();
+                                pushFlash('Advance paid successfully.');
+                              }
+                            }}
+                            className="px-4 py-3 border border-gray-200 rounded-lg"
+                          >
+                            Pay Advance (Card)
+                          </button>
+                        </div>
+                      )}
+                      {job.status === 'advance_paid' && (
+                        <div className="mt-3 text-xs text-gray-500">
+                          Advance paid. Waiting for labour to start work.
+                        </div>
+                      )}
+                      {job.status === 'in_progress' && (
+                        <div className="mt-3 text-xs text-gray-500">
+                          Work in progress. Balance will be due after completion.
+                        </div>
+                      )}
+                      {job.status === 'completed' && payment?.status === 'completed' && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            onClick={() => {
+                              const updated = markReleased(payment.id, 'UPI');
+                              if (updated) {
+                                refreshPayments();
+                                pushFlash('Payment released to labour.');
+                              }
+                            }}
+                            className="px-4 py-3 bg-green-600 text-white rounded-lg"
+                          >
+                            Pay Balance & Release
+                          </button>
+                        </div>
+                      )}
+                      {payment?.status === 'released' && (
+                        <div className="mt-3 flex gap-2">
+                          <button
                             onClick={() => openCompletionModal(job.id)}
-                            className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+                            className="px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
                           >
                             Complete & Rate
                           </button>
                         </div>
                       )}
+                      {job.status !== 'completed' && job.status !== 'cancelled' && (
+                        <div className="mt-3">
+                          <button
+                            onClick={() => handleCancelJob(job.id)}
+                            className="px-4 py-3 border border-red-200 text-red-700 rounded-lg"
+                          >
+                            Cancel Job
+                          </button>
+                        </div>
+                      )}
                     </div>
-                  ))}
+                  );
+                  })}
                 </div>
               )}
             </div>
@@ -1394,7 +1780,25 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
               <div className="bg-white rounded-lg shadow-sm p-6">
                 <h2 className="text-xl font-bold text-gray-900 mb-4">{labels.myRequests}</h2>
                 <div className="space-y-3">
-                  {machineRequests.map(request => (
+                  {machineRequests.map(request => {
+                    const payment = paymentRecords.find(p => p.requestId === request.id) || null;
+                    const machine = machines.find(m => m.id === request.machineId);
+                    const qty = parseDurationQty(request.duration);
+                    const rentalAmount = machine ? Math.round(machine.price * qty) : payment?.amountTotal || 0;
+                    const depositAmount = payment?.depositAmount ?? machine?.deposit ?? 0;
+                    const depositStatus = payment
+                      ? payment.status === 'held'
+                        ? 'Held'
+                        : payment.status === 'completed'
+                        ? 'Awaiting Refund'
+                        : payment.status === 'released'
+                        ? 'Refunded'
+                        : payment.status === 'refunded'
+                        ? 'Refunded'
+                        : 'Not Paid'
+                      : 'Not Paid';
+                    const damageFlag = damageFlags[request.id];
+                    return (
                     <div key={request.id} className="border border-gray-200 rounded-lg p-4">
                       <div className="flex items-center justify-between">
                         <div>
@@ -1406,18 +1810,95 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
                           {request.status}
                         </span>
                       </div>
-                      {request.status === 'accepted' && (
-                        <div className="mt-3">
+                      <div className="mt-2 flex items-center gap-2 text-xs">
+                        <span
+                          className={`px-2 py-1 rounded-full ${
+                            payment ? getPaymentBadgeTone(payment) : 'bg-gray-100 text-gray-700'
+                          }`}
+                        >
+                          {getPaymentStatusLabel(payment)}
+                        </span>
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs text-gray-700">
+                        <div className="border border-gray-200 rounded-lg px-3 py-2">
+                          <div className="text-gray-500">Rental</div>
+                          <div className="font-medium">₹{rentalAmount}</div>
+                        </div>
+                        <div className="border border-gray-200 rounded-lg px-3 py-2">
+                          <div className="text-gray-500">Deposit</div>
+                          <div className="font-medium">₹{depositAmount}</div>
+                        </div>
+                        <div className="border border-gray-200 rounded-lg px-3 py-2">
+                          <div className="text-gray-500">Deposit status</div>
+                          <div className="font-medium">{depositStatus}</div>
+                        </div>
+                        <div className="border border-gray-200 rounded-lg px-3 py-2">
+                          <div className="text-gray-500">Damage</div>
+                          <div className="font-medium">{damageFlag ? 'Reported' : 'None'}</div>
+                        </div>
+                      </div>
+                      {request.status === 'accepted' && payment?.status === 'pending' && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            onClick={() => {
+                              const updated = markMachinePaid(payment.id, 'UPI');
+                              if (updated) {
+                                refreshPayments();
+                                pushFlash('Rental + deposit paid successfully.');
+                              }
+                            }}
+                            className="px-4 py-3 bg-green-600 text-white rounded-lg"
+                          >
+                            Pay Rental + Deposit (UPI)
+                          </button>
+                          <button
+                            onClick={() => {
+                              const updated = markMachinePaid(payment.id, 'Debit Card');
+                              if (updated) {
+                                refreshPayments();
+                                pushFlash('Rental + deposit paid successfully.');
+                              }
+                            }}
+                            className="px-4 py-3 border border-gray-200 rounded-lg"
+                          >
+                            Pay via Card
+                          </button>
+                        </div>
+                      )}
+                      {request.status === 'accepted' && payment?.status === 'held' && (
+                        <div className="mt-3 text-xs text-gray-500">
+                          Payment held. Waiting for machine owner to complete rental.
+                        </div>
+                      )}
+                      {request.status === 'completed' && payment?.status === 'completed' && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            onClick={() => {
+                              const updated = markReleased(payment.id, 'UPI');
+                              if (updated) {
+                                refreshPayments();
+                                pushFlash('Deposit refunded successfully.');
+                              }
+                            }}
+                            className="px-4 py-3 bg-green-600 text-white rounded-lg"
+                          >
+                            Confirm & Refund Deposit
+                          </button>
+                        </div>
+                      )}
+                      {payment?.status === 'released' && (
+                        <div className="mt-3 flex gap-2">
                           <button
                             onClick={() => openMachineCompletionModal(request.id)}
                             className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
                           >
-                            Complete & Rate Machine
+                            Rate Machine
                           </button>
                         </div>
                       )}
                     </div>
-                  ))}
+                  );
+                  })}
                 </div>
               </div>
             )}
@@ -1426,8 +1907,28 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
               <h2 className="text-xl font-bold text-gray-900 mb-4">Smart Alerts (Mock)</h2>
               <div className="space-y-2 text-sm text-gray-700">
                 {alertItems.map(item => (
-                  <div key={item} className="border border-gray-200 rounded-lg p-3">
-                    {item}
+                  <div key={item.id} className="border border-gray-200 rounded-lg p-3">
+                    <p className="text-gray-700">{item.text}</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        onClick={() => setActiveTab('dashboard')}
+                        className="px-3 py-2 bg-green-600 text-white rounded-lg"
+                      >
+                        View Job
+                      </button>
+                      <button
+                        onClick={() => pushFlash('Issue reported to admin.')}
+                        className="px-3 py-2 border border-gray-200 rounded-lg"
+                      >
+                        Report Issue
+                      </button>
+                      <button
+                        onClick={() => alert('Support: +91 90000 00000')}
+                        className="px-3 py-2 border border-gray-200 rounded-lg"
+                      >
+                        Contact Support
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1951,6 +2452,7 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
                           ₹{machine.price}
                           <span className="text-sm text-gray-600 font-normal">/{machine.priceUnit}</span>
                         </p>
+                        <p className="text-xs text-gray-600 mt-1">Deposit: ₹{machine.deposit || 0}</p>
                       </div>
                       <button
                         onClick={() => setSelectedMachine(machine)}
@@ -1971,15 +2473,21 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
             <div className="bg-white rounded-lg shadow-sm p-6">
               <h2 className="text-xl font-bold text-gray-900 mb-4">{labels.paymentsHistory}</h2>
               <div className="space-y-3">
-                {payments.map(payment => (
+                {farmerPayments.length === 0 && (
+                  <p className="text-gray-500">No payment records yet.</p>
+                )}
+                {farmerPayments.map(payment => (
                   <div key={payment.id} className="border border-gray-200 rounded-lg p-4 flex items-center justify-between">
                     <div>
-                      <p className="font-medium text-gray-900">{payment.job}</p>
-                      <p className="text-sm text-gray-600">{payment.date}</p>
+                      <p className="font-medium text-gray-900">
+                        {payment.flow === 'labour' ? 'Labour Payment' : 'Machine Rental'} • {payment.id}
+                      </p>
+                      <p className="text-sm text-gray-600">Total: ₹{payment.amountTotal}</p>
                     </div>
                     <div className="text-right">
-                      <p className="font-semibold text-gray-900">₹{payment.amount}</p>
-                      <p className="text-xs text-gray-600">{payment.status}</p>
+                      <span className={`text-xs px-3 py-1 rounded-full ${getPaymentBadgeTone(payment)}`}>
+                        {getPaymentStatusLabel(payment)}
+                      </span>
                     </div>
                   </div>
                 ))}
@@ -2292,3 +2800,4 @@ export function FarmerDashboard({ user, onLogout }: FarmerDashboardProps) {
     </div>
   );
 }
+

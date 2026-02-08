@@ -1,14 +1,26 @@
 import { useState, useEffect, useRef } from 'react';
 import { User, Machine, MachineRequest } from '../App';
-import { LogOut, Tractor, Plus, MapPin, Phone, DollarSign, Check, X, Sparkles, Wrench, Map } from 'lucide-react';
+import { Tractor, Plus, MapPin, Phone, DollarSign, Check, X, Sparkles, Wrench, Map, LogOut } from 'lucide-react';
 import { NotificationBell, NotificationItem } from './NotificationBell';
+import { useAuth } from '../state/auth';
+import { useNavigate } from 'react-router-dom';
+import {
+  ensureMachinePayment,
+  findPaymentByRequest,
+  getPaymentBadgeTone,
+  getPaymentStatusLabel,
+  getPayments,
+  markWorkCompleted,
+  PaymentRecord
+} from '../state/payments';
 
 interface MachineDashboardProps {
   user: User;
-  onLogout: () => void;
 }
 
-export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
+export function MachineDashboard({ user }: MachineDashboardProps) {
+  const { logout } = useAuth();
+  const navigate = useNavigate();
   const [language, setLanguage] = useState(() => localStorage.getItem('appLanguage') || 'English');
   const [activeTab, setActiveTab] = useState<'machines' | 'requests' | 'add-machine' | 'maintenance' | 'analytics' | 'profile'>('machines');
   const [machines, setMachines] = useState<Machine[]>([]);
@@ -33,16 +45,24 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
   const [machinePhotos, setMachinePhotos] = useState<Record<string, string[]>>({});
   const [photoUploads, setPhotoUploads] = useState<string[]>([]);
   const [machineRatings, setMachineRatings] = useState<Record<string, any>>({});
+  const [paymentRecords, setPaymentRecords] = useState<PaymentRecord[]>([]);
+  const [damageFlags, setDamageFlags] = useState<Record<string, boolean>>({});
   const [photoError, setPhotoError] = useState('');
   const machinePhotoInputRef = useRef<HTMLInputElement | null>(null);
   const [formData, setFormData] = useState({
     machineType: 'Tractor',
     price: '',
+    deposit: '',
     priceUnit: 'hour' as 'hour' | 'day',
     description: '',
     operatorAssigned: 'Self',
     documentsUploaded: false
   });
+
+  const handleLogout = () => {
+    logout();
+    navigate('/');
+  };
 
   useEffect(() => {
     loadData();
@@ -85,6 +105,17 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
   }, []);
 
   useEffect(() => {
+    const stored = localStorage.getItem('machineDamageFlags');
+    if (stored) {
+      setDamageFlags(JSON.parse(stored));
+    }
+  }, []);
+
+  useEffect(() => {
+    setPaymentRecords(getPayments());
+  }, []);
+
+  useEffect(() => {
     setProfileForm({ name: user.name, phone: user.phone, village: user.village });
   }, [user]);
 
@@ -100,6 +131,10 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
     const allRequests: MachineRequest[] = JSON.parse(localStorage.getItem('machineRequests') || '[]');
     const myRequests = allRequests.filter(r => r.ownerId === user.id);
     setRequests(myRequests);
+  };
+
+  const refreshPayments = () => {
+    setPaymentRecords(getPayments());
   };
 
   const handleAddMachine = (e: React.FormEvent) => {
@@ -118,6 +153,7 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
       machineType: formData.machineType,
       price: parseFloat(formData.price),
       priceUnit: formData.priceUnit,
+      deposit: parseFloat(formData.deposit || '0'),
       availability: true,
       description: formData.description
     };
@@ -136,6 +172,7 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
     setFormData({
       machineType: 'Tractor',
       price: '',
+      deposit: '',
       priceUnit: 'hour',
       description: '',
       operatorAssigned: 'Self',
@@ -164,6 +201,12 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
     if (requestIndex !== -1) {
       allRequests[requestIndex].status = 'accepted';
       localStorage.setItem('machineRequests', JSON.stringify(allRequests));
+      const request = allRequests[requestIndex];
+      const machine = machines.find(m => m.id === request.machineId);
+      if (machine) {
+        ensureMachinePayment(request, machine);
+        refreshPayments();
+      }
       loadData();
       pushNotification({
         id: `N-${Date.now()}`,
@@ -200,6 +243,11 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
     if (requestIndex !== -1) {
       allRequests[requestIndex].status = 'completed';
       localStorage.setItem('machineRequests', JSON.stringify(allRequests));
+      const payment = findPaymentByRequest(requestId);
+      if (payment) {
+        markWorkCompleted(payment.id);
+        refreshPayments();
+      }
       loadData();
     }
   };
@@ -213,12 +261,9 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
     }
   };
 
-  const earnings = requests
-    .filter(r => r.status === 'completed')
-    .reduce((sum, request) => {
-      const machine = machines.find(m => m.id === request.machineId);
-      return sum + (machine ? machine.price : 0);
-    }, 0);
+  const earnings = paymentRecords
+    .filter(p => p.flow === 'machine' && p.machineOwnerId === user.id && p.status === 'released')
+    .reduce((sum, payment) => sum + payment.amountTotal, 0);
 
   const stats = {
     machines: machines.length,
@@ -230,6 +275,12 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
   const saveNegotiations = (next: Record<string, any>) => {
     setNegotiations(next);
     localStorage.setItem('negotiations', JSON.stringify(next));
+  };
+
+  const toggleDamageFlag = (requestId: string) => {
+    const next = { ...damageFlags, [requestId]: !damageFlags[requestId] };
+    setDamageFlags(next);
+    localStorage.setItem('machineDamageFlags', JSON.stringify(next));
   };
 
   const getNegotiation = (key: string, basePrice: number) => {
@@ -323,8 +374,7 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
       accept: 'Accept',
       reject: 'Reject',
       markCompleted: 'Mark as Completed',
-      toggled: 'Toggle',
-      requestedBy: 'Requested by'
+      toggled: 'Toggle'
     },
     'తెలుగు': {
       role: 'యంత్ర యజమాని',
@@ -373,8 +423,7 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
       accept: 'అంగీకరించండి',
       reject: 'తిరస్కరించండి',
       markCompleted: 'పూర్తయిందిగా గుర్తించండి',
-      toggled: 'టాగుల్',
-      requestedBy: 'అభ్యర్థించినవారు'
+      toggled: 'టాగుల్'
     },
     हिन्दी: {
       role: 'मशीन मालिक',
@@ -423,8 +472,7 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
       accept: 'स्वीकारें',
       reject: 'अस्वीकारें',
       markCompleted: 'पूर्ण के रूप में चिन्हित करें',
-      toggled: 'टॉगल',
-      requestedBy: 'अनुरोधकर्ता'
+      toggled: 'टॉगल'
     }
   };
 
@@ -449,9 +497,9 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen app-shell dashboard-shell">
       {/* Header */}
-      <header className="bg-white shadow-sm">
+        <header className="bg-white shadow-sm relative z-30 overflow-visible">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="bg-blue-600 p-2 rounded-lg">
@@ -478,11 +526,11 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
               <p className="text-sm text-gray-600">🚜 {labels.role}</p>
             </div>
             <button
-              onClick={onLogout}
-              className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-              title="Logout"
+              onClick={handleLogout}
+              className="px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
             >
-              <LogOut className="w-5 h-5" />
+              <LogOut className="w-4 h-4" />
+              Logout
             </button>
           </div>
         </div>
@@ -658,6 +706,10 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
                           </span>
                         </div>
                         <div className="flex items-center gap-2 text-sm text-gray-600">
+                          <DollarSign className="w-4 h-4" />
+                          <span>Deposit: ₹{machine.deposit || 0}</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-sm text-gray-600">
                           <MapPin className="w-4 h-4" />
                           <span>{machine.ownerVillage}</span>
                         </div>
@@ -700,8 +752,10 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {requests.map(request => (
-                    <div key={request.id} className="border border-gray-200 rounded-lg p-4">
+                  {requests.map(request => {
+                    const payment = paymentRecords.find(p => p.requestId === request.id) || null;
+                    return (
+                      <div key={request.id} className="border border-gray-200 rounded-lg p-4">
                       <div className="flex items-start justify-between mb-3">
                         <div className="flex-1">
                           <div className="flex items-center gap-3 mb-2">
@@ -723,6 +777,26 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
                               <span>{request.location}</span>
                             </div>
                             <p className="text-gray-600">{labels.date}: {request.date} • {labels.duration}: {request.duration}</p>
+                            <div className="mt-2 flex items-center gap-2 text-xs">
+                              <span className={`px-2 py-1 rounded-full ${getPaymentBadgeTone(payment)}`}>
+                                {getPaymentStatusLabel(payment)}
+                              </span>
+                              {payment?.status === 'completed' && (
+                                <span className="text-gray-500">Awaiting farmer confirmation</span>
+                              )}
+                              {payment?.status === 'released' && (
+                                <span className="text-green-700">Rental paid</span>
+                              )}
+                            </div>
+                            <div className="mt-2 flex items-center gap-2 text-xs text-gray-600">
+                              <span>Damage: {damageFlags[request.id] ? 'Reported' : 'None'}</span>
+                              <button
+                                onClick={() => toggleDamageFlag(request.id)}
+                                className="px-2 py-1 border border-gray-200 rounded-full"
+                              >
+                                {damageFlags[request.id] ? 'Clear Damage' : 'Report Damage'}
+                              </button>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -881,7 +955,7 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
                         </div>
                       )}
 
-                      {request.status === 'accepted' && (
+                      {request.status === 'accepted' && payment?.status === 'held' && (
                         <button
                           onClick={() => handleCompleteRequest(request.id)}
                           className="w-full mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
@@ -889,8 +963,14 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
                           {labels.markCompleted}
                         </button>
                       )}
-                    </div>
-                  ))}
+                      {request.status === 'accepted' && payment?.status === 'pending' && (
+                        <div className="mt-3 text-xs text-gray-500">
+                          Waiting for farmer payment (rental + deposit).
+                        </div>
+                      )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -957,6 +1037,19 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
                     <option value="day">Day</option>
                   </select>
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Refundable Deposit (₹)
+                </label>
+                <input
+                  type="number"
+                  value={formData.deposit}
+                  onChange={e => setFormData({ ...formData, deposit: e.target.value })}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Example: 2000"
+                />
               </div>
 
               <div>
@@ -1333,3 +1426,4 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
     </div>
   );
 }
+

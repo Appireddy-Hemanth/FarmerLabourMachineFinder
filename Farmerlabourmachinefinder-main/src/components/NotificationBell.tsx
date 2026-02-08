@@ -1,75 +1,95 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { useNavigate } from 'react-router-dom';
+import { getNotifications, getUnreadCount, markNotificationRead } from '../services/notifications.service';
 
 export interface NotificationItem {
   id: string;
-  userRole: 'Farmer' | 'Labour' | 'Machine Owner' | 'Admin';
   title: string;
   message: string;
-  type: 'ActionRequired' | 'Info' | 'Warning' | 'Payment';
+  type?: 'ActionRequired' | 'Info' | 'Warning' | 'Payment';
   read: boolean;
-  timestamp: string;
+  timestamp?: string;
+  createdAtFormatted?: string;
+  link?: { type: 'job' | 'payment' | 'machine' | 'dashboard'; id?: string };
 }
 
 interface NotificationBellProps {
   role: 'farmer' | 'labourer' | 'machine_owner' | 'admin';
 }
 
-const roleMap: Record<NotificationBellProps['role'], NotificationItem['userRole']> = {
-  farmer: 'Farmer',
-  labourer: 'Labour',
-  machine_owner: 'Machine Owner',
-  admin: 'Admin'
-};
-
 export function NotificationBell({ role }: NotificationBellProps) {
   const [open, setOpen] = useState(false);
   const [muted, setMuted] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
-    const stored = localStorage.getItem('notifications');
-    if (stored) {
-      setNotifications(JSON.parse(stored));
-    }
-    const mute = localStorage.getItem('notificationsMuted');
-    if (mute) {
-      setMuted(mute === 'true');
-    }
+    getNotifications()
+      .then(({ notifications: items }) => setNotifications(items))
+      .catch(() => setNotifications([]));
   }, []);
 
-  const roleName = roleMap[role];
-  const roleNotifications = useMemo(
-    () => notifications.filter(n => n.userRole === roleName),
-    [notifications, roleName]
-  );
+  const roleNotifications = useMemo(() => notifications, [notifications]);
   const unreadCount = roleNotifications.filter(n => !n.read).length;
 
   const updateNotifications = (next: NotificationItem[]) => {
     setNotifications(next);
-    localStorage.setItem('notifications', JSON.stringify(next));
   };
 
   const markAllRead = () => {
-    const next = notifications.map(n =>
-      n.userRole === roleName ? { ...n, read: true } : n
-    );
+    const next = notifications.map(n => ({ ...n, read: true }));
     updateNotifications(next);
   };
 
   const markRead = (id: string) => {
     const next = notifications.map(n => (n.id === id ? { ...n, read: true } : n));
     updateNotifications(next);
+    markNotificationRead(id).catch(() => {});
   };
 
   const toggleMute = () => {
     const next = !muted;
     setMuted(next);
-    localStorage.setItem('notificationsMuted', String(next));
   };
+
+  useEffect(() => {
+    if (!open) return;
+    getUnreadCount().catch(() => {});
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open || !buttonRef.current) return;
+    const updatePosition = () => {
+      const rect = buttonRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const dropdownWidth = 320;
+      const right = Math.max(12, window.innerWidth - rect.right);
+      const left = Math.min(rect.left, window.innerWidth - dropdownWidth - 12);
+      setDropdownStyle({
+        position: 'fixed',
+        top: rect.bottom + 8,
+        left: right < 12 ? left : undefined,
+        right: right >= 12 ? right : undefined,
+        width: dropdownWidth,
+        zIndex: 1000
+      });
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [open]);
 
   return (
     <div className="relative">
       <button
+        ref={buttonRef}
         onClick={() => setOpen(prev => !prev)}
         className="relative px-3 py-2 border border-gray-200 rounded-lg text-sm"
         title="Notifications"
@@ -81,8 +101,8 @@ export function NotificationBell({ role }: NotificationBellProps) {
           </span>
         )}
       </button>
-      {open && (
-        <div className="absolute right-0 mt-2 w-80 bg-white border border-gray-200 rounded-lg shadow-lg z-50">
+      {open && createPortal(
+        <div style={dropdownStyle} className="bg-white border border-gray-200 rounded-lg shadow-lg">
           <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200">
             <span className="font-semibold text-sm">Notifications</span>
             <div className="flex gap-2 text-xs">
@@ -101,7 +121,13 @@ export function NotificationBell({ role }: NotificationBellProps) {
             {roleNotifications.map(n => (
               <button
                 key={n.id}
-                onClick={() => markRead(n.id)}
+                onClick={() => {
+                  markRead(n.id);
+                  if (n.link?.type === 'job' && n.link.id) navigate('/jobs');
+                  if (n.link?.type === 'payment' && n.link.id) navigate('/payments');
+                  if (n.link?.type === 'machine' && n.link.id) navigate('/machines');
+                  if (n.link?.type === 'dashboard') navigate('/');
+                }}
                 className={`w-full text-left px-3 py-2 border-b border-gray-100 ${
                   n.read ? 'bg-white' : 'bg-blue-50'
                 }`}
@@ -115,7 +141,8 @@ export function NotificationBell({ role }: NotificationBellProps) {
               </button>
             ))}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

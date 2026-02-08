@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { User, Job, Machine, MachineRequest } from '../App';
-import { LogOut, ShieldCheck, Users, Briefcase, AlertTriangle, BarChart3, Search } from 'lucide-react';
+import { ShieldCheck, Users, Briefcase, AlertTriangle, BarChart3, Search, LogOut } from 'lucide-react';
 import { NotificationBell, NotificationItem } from './NotificationBell';
+import { PaymentRecord, getPaymentBadgeTone, getPaymentStatusLabel, getPayments, markRefunded } from '../state/payments';
+import { useAuth } from '../state/auth';
+import { useNavigate } from 'react-router-dom';
 
 interface AdminDashboardProps {
   user: User;
-  onLogout: () => void;
 }
 
 interface Dispute {
@@ -16,7 +18,9 @@ interface Dispute {
   date: string;
 }
 
-export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
+export function AdminDashboard({ user }: AdminDashboardProps) {
+  const { logout } = useAuth();
+  const navigate = useNavigate();
   const [language, setLanguage] = useState(() => localStorage.getItem('appLanguage') || 'English');
   const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'jobs' | 'machines' | 'disputes' | 'payments' | 'analytics'>('overview');
   const [users, setUsers] = useState<User[]>([]);
@@ -29,7 +33,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
   const [deletedJobs, setDeletedJobs] = useState<Job[]>([]);
   const [deletedMachines, setDeletedMachines] = useState<Machine[]>([]);
   const [adminActions, setAdminActions] = useState<Array<{ action: string; targetId: string; timestamp: string; type: string }>>([]);
-  const [payments, setPayments] = useState<Array<{ id: string; jobId: string; amount: number; status: string; timestamp: string }>>([]);
+  const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [fraudFlags, setFraudFlags] = useState<Record<string, string>>({});
 
   const [disputes, setDisputes] = useState<Dispute[]>([
@@ -79,7 +83,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
     setDeletedJobs(JSON.parse(localStorage.getItem('deletedJobs') || '[]'));
     setDeletedMachines(JSON.parse(localStorage.getItem('deletedMachines') || '[]'));
     setAdminActions(JSON.parse(localStorage.getItem('adminActions') || '[]'));
-    setPayments(JSON.parse(localStorage.getItem('paymentRecords') || '[]'));
+    setPayments(getPayments());
     setFraudFlags(JSON.parse(localStorage.getItem('fraudFlags') || '{}'));
   }, []);
 
@@ -343,9 +347,14 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
     }
   };
 
+  const handleLogout = () => {
+    logout();
+    navigate('/');
+  };
+
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white shadow-sm">
+    <div className="min-h-screen app-shell dashboard-shell">
+        <header className="bg-white shadow-sm relative z-30 overflow-visible">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="bg-blue-600 p-2 rounded-lg">
@@ -372,11 +381,11 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
               <p className="text-sm text-gray-600">🛡️ {labels.role}</p>
             </div>
             <button
-              onClick={onLogout}
-              className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-              title="Logout"
+              onClick={handleLogout}
+              className="px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
             >
-              <LogOut className="w-5 h-5" />
+              <LogOut className="w-4 h-4" />
+              Logout
             </button>
           </div>
         </div>
@@ -513,7 +522,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                     localStorage.removeItem('jobs');
                     localStorage.removeItem('machines');
                     localStorage.removeItem('machineRequests');
-                    localStorage.removeItem('paymentRecords');
+                    localStorage.removeItem('payments');
                     localStorage.removeItem('notifications');
                     localStorage.removeItem('adminActions');
                     localStorage.removeItem('deletedUsers');
@@ -527,12 +536,38 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
                 </button>
                 <button
                   onClick={() => {
-                    const samplePayments = [
-                      { id: 'P1', jobId: '1', amount: 2000, status: 'Paid', timestamp: new Date().toLocaleString() },
-                      { id: 'P2', jobId: '2', amount: 3500, status: 'Pending', timestamp: new Date().toLocaleString() }
+                    const now = Date.now();
+                    const samplePayments: PaymentRecord[] = [
+                      {
+                        id: 'PAY-L-1',
+                        flow: 'labour',
+                        jobId: '1',
+                        farmerId: '1',
+                        labourerId: '2',
+                        amountTotal: 2000,
+                        advanceAmount: 800,
+                        balanceAmount: 1200,
+                        status: 'released',
+                        createdAt: now,
+                        updatedAt: now,
+                        history: [{ at: now, label: 'Payment released' }]
+                      },
+                      {
+                        id: 'PAY-M-1',
+                        flow: 'machine',
+                        requestId: '1',
+                        farmerId: '1',
+                        machineOwnerId: '4',
+                        amountTotal: 3000,
+                        depositAmount: 8000,
+                        status: 'held',
+                        createdAt: now,
+                        updatedAt: now,
+                        history: [{ at: now, label: 'Rental + deposit paid' }]
+                      }
                     ];
                     setPayments(samplePayments);
-                    localStorage.setItem('paymentRecords', JSON.stringify(samplePayments));
+                    localStorage.setItem('payments', JSON.stringify(samplePayments));
                     alert('Sample payment data loaded.');
                   }}
                   className="px-3 py-2 border border-gray-200 rounded-lg text-sm"
@@ -854,22 +889,27 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
               {payments.map(p => (
                 <div key={p.id} className="border border-gray-200 rounded-lg p-3 flex items-center justify-between">
                   <div>
-                    <p className="font-medium">Job {p.jobId}</p>
-                    <p className="text-xs text-gray-600">₹{p.amount} • {p.timestamp}</p>
+                    <p className="font-medium">{p.flow === 'labour' ? 'Labour Payment' : 'Machine Rental'} • {p.id}</p>
+                    <p className="text-xs text-gray-600">
+                      ₹{p.amountTotal}{p.depositAmount ? ` • Deposit ₹${p.depositAmount}` : ''} • {new Date(p.createdAt).toLocaleDateString()}
+                    </p>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs px-2 py-1 rounded-full bg-gray-100">{p.status}</span>
-                    <button
-                      onClick={() => {
-                        const next = payments.map(x => x.id === p.id ? { ...x, status: 'Resolved' } : x);
-                        setPayments(next);
-                        localStorage.setItem('paymentRecords', JSON.stringify(next));
-                        logAction('PAYMENT_RESOLVED', p.id, 'UPDATE');
-                      }}
-                      className="px-2 py-1 text-xs border border-gray-200 rounded-lg"
-                    >
-                      Mark Resolved
-                    </button>
+                    <span className={`text-xs px-2 py-1 rounded-full ${getPaymentBadgeTone(p)}`}>
+                      {getPaymentStatusLabel(p)}
+                    </span>
+                    {p.status !== 'refunded' && (
+                      <button
+                        onClick={() => {
+                          markRefunded(p.id);
+                          setPayments(getPayments());
+                          logAction('PAYMENT_REFUNDED', p.id, 'UPDATE');
+                        }}
+                        className="px-2 py-1 text-xs border border-red-200 text-red-700 rounded-lg"
+                      >
+                        Trigger Refund
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -928,3 +968,4 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
     </div>
   );
 }
+

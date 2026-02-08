@@ -23,6 +23,12 @@ const responses: Record<Lang, Record<string, string>> = {
     job: 'To post a job: go to Post Work → fill details → Post Job. You can also use Auto-fill from last job.',
     hire: 'You can hire labour by posting a job. Use Smart Matching to find nearby labour.',
     machine: 'To rent machines: go to Find Machines → select machine → fill date/duration → Send Request.',
+    payment: 'All payments are held in escrow and released only after completion confirmation.',
+    deposit: 'Machine deposits are refundable after completion if no damage is reported.',
+    refund: 'Refunds are handled by admin in case of cancellation or disputes.',
+    status: 'Job flow: Posted → Labour Applied → Agreement Locked → Advance Paid → In Progress → Completed → Cancelled/Refunded.',
+    next: 'Tell me your role or ask about jobs, payments, or status flow to get the next step.',
+    support: 'Contact support at +91 90000 00000 or support@agriconnect.demo.',
     crop: 'Crop Planning Assistant is in Insights. Choose crop to see stages and needs.',
     yield: 'Yield & Cost Simulator is in Insights. Choose crop and land size to view mock cost/yield.',
     alerts: 'Smart Alerts appear on your dashboard for delays and idle machines (mock).',
@@ -168,6 +174,40 @@ const responses: Record<Lang, Record<string, string>> = {
   }
 };
 
+type RoleKey = NonNullable<User['role']>;
+
+const roleFaq: Record<RoleKey, Record<string, string>> = {
+  farmer: {
+    job: 'Post job → set location, date, duration, budget → submit. Track status on your dashboard.',
+    payment: 'Labour flow: labour applies → you lock agreement → pay 30–50% advance → work in progress → pay balance → release.',
+    deposit: 'Machine flow: pay rental + refundable deposit → deposit refunded after completion.',
+    status: 'Job flow: Posted → Labour Applied → Agreement Locked → Advance Paid → In Progress → Completed. Cancelled only refunds if payment was made.',
+    next: 'Next step: wait for labour to apply, then Accept to lock agreement and pay the advance.',
+    support: 'If payment fails, retry from Payments page or contact support.'
+  },
+  labourer: {
+    job: 'Apply from Find Work. After farmer accepts and pays advance, start work and mark completion.',
+    payment: 'Advance comes first. Balance is released after farmer confirmation.',
+    status: 'Job flow: Applied → Agreement Locked → Advance Paid → In Progress → Completed.',
+    next: 'Next step: apply for a job or accept incoming requests, then wait for advance payment.',
+    support: 'If farmer delays payment, raise a dispute from your dashboard.'
+  },
+  machine_owner: {
+    machine: 'Add machine → set rent + deposit → accept booking requests.',
+    deposit: 'Deposits are refunded after rental completion if no damage is reported.',
+    payment: 'Rental amount is released after farmer confirms completion.',
+    status: 'Rental Paid & Deposit Held → Completed → Deposit Refunded.',
+    next: 'Next step: accept a booking request and confirm completion after rental.',
+    support: 'Use disputes tab or contact support for damage claims.'
+  },
+  admin: {
+    payment: 'Review payments, trigger refunds, and resolve disputes from the Admin panel.',
+    status: 'Held payments are escrowed. Released payments are completed. Refunded payments are reversed.',
+    next: 'Next step: review pending disputes or payments needing refunds.',
+    support: 'Escalate severe cases to support team for manual verification.'
+  }
+};
+
 const languageFromText = (text: string): Lang => {
   if (/[അ-ഺ]/.test(text)) return 'മലയാളം';
   if (/[ಅ-಺]/.test(text)) return 'ಕನ್ನಡ';
@@ -181,7 +221,13 @@ const languageFromText = (text: string): Lang => {
 const detectIntent = (text: string) => {
   const lower = text.toLowerCase();
   if (/(movie|politics|cricket|code|programming|music|stock)/.test(lower)) return 'limited';
-  if (/(aadhaar|aadhar|gps|payment|upi|wallet)/.test(lower)) return 'future';
+  if (/(payment|upi|wallet|card|advance|balance|escrow)/.test(lower)) return 'payment';
+  if (/(deposit|refundable|damage)/.test(lower)) return 'deposit';
+  if (/(refund|cancel|cancellation)/.test(lower)) return 'refund';
+  if (/(status|pending|held|released|completed)/.test(lower)) return 'status';
+  if (/(next step|what next|next)/.test(lower)) return 'next';
+  if (/(support|help|contact)/.test(lower)) return 'support';
+  if (/(aadhaar|aadhar|gps)/.test(lower)) return 'future';
   if (/(job|post|work)/.test(lower)) return 'job';
   if (/(hire|labour|labor)/.test(lower)) return 'hire';
   if (/(machine|tractor|harvester|sprayer|drone)/.test(lower)) return 'machine';
@@ -207,6 +253,21 @@ export function Chatbot({ currentUser }: ChatbotProps) {
 
   const storedLang = (localStorage.getItem('appLanguage') as Lang) || 'English';
   const role = currentUser?.role || null;
+  const quickReplies = useMemo(() => {
+    if (!role) {
+      return ['How does payment work?', 'How to post a job', 'Next step', 'Contact support'];
+    }
+    if (role === 'farmer') {
+      return ['How to post a job', 'How labour payment works', 'Payment status meaning', 'Next step', 'Contact support'];
+    }
+    if (role === 'labourer') {
+      return ['Advance payment', 'When will I get balance?', 'What if farmer delays?', 'Next step', 'Contact support'];
+    }
+    if (role === 'machine_owner') {
+      return ['Deposit rules', 'Refund timeline', 'Damage handling', 'Next step', 'Contact support'];
+    }
+    return ['Resolve disputes', 'Trigger refund', 'Monitor payments'];
+  }, [role]);
 
   const initialLang = useMemo<Lang>(() => storedLang, [storedLang]);
 
@@ -222,12 +283,17 @@ export function Chatbot({ currentUser }: ChatbotProps) {
     }
   }, [messages.length, initialLang]);
 
-  const sendMessage = () => {
-    const text = input.trim();
+  const sendMessage = (override?: string) => {
+    const text = (override ?? input).trim();
     if (!text) return;
     const userLang = languageFromText(text);
     const lang = userLang === 'English' ? initialLang : userLang;
     const intent = detectIntent(text);
+    const roleReply = role ? roleFaq[role as RoleKey]?.[intent] : null;
+    const fallback =
+      responses[lang][intent] ||
+      responses.English[intent] ||
+      responses[lang].default;
 
     const next: Message[] = [
       ...messages,
@@ -235,7 +301,7 @@ export function Chatbot({ currentUser }: ChatbotProps) {
       {
         id: `${Date.now()}-b`,
         from: 'bot',
-        text: role ? responses[lang][intent] : responses[lang].askRole
+        text: role ? roleReply || fallback : responses[lang].askRole
       }
     ];
     setMessages(next);
@@ -281,7 +347,7 @@ export function Chatbot({ currentUser }: ChatbotProps) {
             {messages.map(msg => (
               <div
                 key={msg.id}
-                className={`px-3 py-2 rounded-lg max-w-[90%] ${
+                className={`px-3 py-2 rounded-lg max-w-md ${
                   msg.from === 'user'
                     ? 'bg-green-100 text-gray-900 ml-auto'
                     : 'bg-gray-100 text-gray-900'
@@ -289,6 +355,17 @@ export function Chatbot({ currentUser }: ChatbotProps) {
               >
                 {msg.text}
               </div>
+            ))}
+          </div>
+          <div className="px-3 pb-2 flex flex-wrap gap-2">
+            {quickReplies.map(reply => (
+              <button
+                key={reply}
+                onClick={() => sendMessage(reply)}
+                className="text-xs px-2 py-1 border border-gray-200 rounded-full bg-white hover:bg-gray-100"
+              >
+                {reply}
+              </button>
             ))}
           </div>
           <div className="p-3 border-t border-gray-200 flex gap-2">

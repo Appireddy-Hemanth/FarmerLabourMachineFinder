@@ -1,18 +1,25 @@
-import { useState } from 'react';
-import { User } from '../App';
-import { UserCircle, Phone, MapPin, Lock, Briefcase } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { UserCircle, Phone, MapPin, Lock, Briefcase, Mail, ShieldCheck, Tractor } from 'lucide-react';
+import { useAuth } from '../state/auth';
 
 interface AuthPageProps {
-  onLogin: (user: User) => void;
+  initialRole?: 'farmer' | 'labourer' | 'machine_owner' | 'admin';
 }
 
-export function AuthPage({ onLogin }: AuthPageProps) {
+export function AuthPage({ initialRole }: AuthPageProps) {
+  const { login, register } = useAuth();
   const [isLogin, setIsLogin] = useState(true);
-  const [role, setRole] = useState<'farmer' | 'labourer' | 'machine_owner' | 'admin'>('farmer');
-  const [language, setLanguage] = useState('English');
+  const [role, setRole] = useState<'farmer' | 'labourer' | 'machine_owner' | 'admin'>(initialRole || 'farmer');
+  const [language, setLanguage] = useState(() => localStorage.getItem('appLanguage') || 'English');
+  useEffect(() => {
+    if (initialRole) {
+      setRole(initialRole);
+    }
+  }, [initialRole]);
   const [formData, setFormData] = useState({
     name: '',
     phone: '',
+    email: '',
     village: '',
     password: '',
     aadhaarKyc: false,
@@ -20,26 +27,30 @@ export function AuthPage({ onLogin }: AuthPageProps) {
     skills: [] as string[],
   });
   const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  useEffect(() => {
+    localStorage.setItem('appLanguage', language);
+  }, [language]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
-    const users: User[] = JSON.parse(localStorage.getItem('users') || '[]');
-
     if (isLogin) {
-      // Login logic
-      const user = users.find(
-        u => u.phone === formData.phone && u.password === formData.password
-      );
-
-      if (user) {
-        onLogin(user);
-      } else {
-        setError('Invalid phone number or password');
+      if (!formData.phone || !formData.password) {
+        setError('Please enter phone and password');
+        return;
+      }
+      setIsSubmitting(true);
+      try {
+        await login({ phone: formData.phone, password: formData.password });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Login failed');
+      } finally {
+        setIsSubmitting(false);
       }
     } else {
-      // Signup logic
       if (role === 'admin') {
         setError('Admin signup is disabled');
         return;
@@ -48,27 +59,21 @@ export function AuthPage({ onLogin }: AuthPageProps) {
         setError('Please fill all required fields');
         return;
       }
-
-      const existingUser = users.find(u => u.phone === formData.phone);
-      if (existingUser) {
-        setError('Phone number already registered');
-        return;
+      setIsSubmitting(true);
+      try {
+        await register({
+          name: formData.name,
+          phone: formData.phone,
+          location: formData.village,
+          role,
+          password: formData.password,
+          skills: role === 'labourer' ? formData.skills : undefined
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Registration failed');
+      } finally {
+        setIsSubmitting(false);
       }
-
-      const newUser: User = {
-        id: Date.now().toString(),
-        name: formData.name,
-        role: role,
-        phone: formData.phone,
-        village: formData.village,
-        password: formData.password,
-        skills: role === 'labourer' ? formData.skills : undefined,
-        machines: role === 'machine_owner' ? [] : undefined,
-      };
-
-      users.push(newUser);
-      localStorage.setItem('users', JSON.stringify(users));
-      onLogin(newUser);
     }
   };
 
@@ -86,14 +91,16 @@ export function AuthPage({ onLogin }: AuthPageProps) {
   const t = {
     English: {
       title: 'AgriConnect',
-      subtitle: 'Farmer-Labour & Machine Finder',
+      subtitle: 'Farmer–Labour & Machine Finder',
       login: 'Login',
       signup: 'Sign Up',
       selectRole: 'Select Your Role',
       fullName: 'Full Name',
       phone: 'Phone Number',
+      email: 'Email (optional)',
       village: 'Village',
-      password: 'Password',
+      password: 'Password / OTP',
+      passwordNote: 'Use demo password or OTP for now.',
       aadhaar: 'Aadhaar e-KYC (Mock)',
       farmerType: 'Farmer Type',
       skills: 'Your Skills',
@@ -108,8 +115,10 @@ export function AuthPage({ onLogin }: AuthPageProps) {
       selectRole: 'పాత్రను ఎంచుకోండి',
       fullName: 'పూర్తి పేరు',
       phone: 'ఫోన్ నంబర్',
+      email: 'ఇమెయిల్ (ఐచ్ఛికం)',
       village: 'గ్రామం',
-      password: 'పాస్‌వర్డ్',
+      password: 'పాస్‌వర్డ్ / OTP',
+      passwordNote: 'డెమో పాస్‌వర్డ్ లేదా OTP వాడండి.',
       aadhaar: 'ఆధార్ e-KYC (మాక్)',
       farmerType: 'రైతు రకం',
       skills: 'మీ నైపుణ్యాలు',
@@ -124,8 +133,10 @@ export function AuthPage({ onLogin }: AuthPageProps) {
       selectRole: 'भूमिका चुनें',
       fullName: 'पूरा नाम',
       phone: 'फोन नंबर',
+      email: 'ईमेल (वैकल्पिक)',
       village: 'गाँव',
-      password: 'पासवर्ड',
+      password: 'पासवर्ड / OTP',
+      passwordNote: 'डेमो पासवर्ड या OTP इस्तेमाल करें।',
       aadhaar: 'आधार e-KYC (मॉक)',
       farmerType: 'किसान प्रकार',
       skills: 'आपकी कौशल',
@@ -136,295 +147,335 @@ export function AuthPage({ onLogin }: AuthPageProps) {
 
   const labels = t[language as keyof typeof t] || t.English;
 
-  const fillDemo = (phone: string, password: string) => {
-    setIsLogin(true);
-    setFormData(prev => ({ ...prev, phone, password }));
-  };
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-8">
-        <div className="flex items-center justify-between mb-6">
-          <div className="text-xs text-gray-500">Language (UI only)</div>
-          <select
-            value={language}
-            onChange={e => setLanguage(e.target.value)}
-            className="text-xs border border-gray-200 rounded-lg px-2 py-1"
-          >
-            <option>English</option>
-            <option>తెలుగు</option>
-            <option>हिन्दी</option>
-          </select>
-        </div>
-
-        <div className="text-center mb-6">
-          <div className="flex items-center justify-center mb-4">
-            <div className="bg-green-600 p-3 rounded-full">
-              <Briefcase className="w-8 h-8 text-white" />
+    <div className="app-shell auth-shell">
+      <div className="auth-grid enter-fade">
+        <section className="auth-hero">
+          <div className="brand-row">
+            <span className="brand-mark">AgriConnect</span>
+            <span className="trust-badge">Verified local network</span>
+          </div>
+          <h1 className="auth-title display-font">Farmer–Labour–Machine Finder</h1>
+          <p className="auth-subtitle">
+            A simple, fast, and trustworthy marketplace connecting farms, labour, and machines in rural regions.
+          </p>
+          <div className="hero-cta">
+            <span className="cta-pill">Post Job</span>
+            <span className="cta-pill">Find Labour</span>
+            <span className="cta-pill">Book Machine</span>
+          </div>
+          <div className="hero-stats">
+            <div className="stat-card">
+              <p className="text-xs text-gray-600">Average response time</p>
+              <p className="text-lg font-semibold text-gray-900">Under 2 hours</p>
+            </div>
+            <div className="stat-card">
+              <p className="text-xs text-gray-600">Verified phone badges</p>
+              <p className="text-lg font-semibold text-gray-900">Always visible</p>
+            </div>
+            <div className="stat-card">
+              <p className="text-xs text-gray-600">Clear pricing</p>
+              <p className="text-lg font-semibold text-gray-900">Daily or hourly</p>
             </div>
           </div>
-          <h1 className="text-3xl font-bold text-gray-900">{labels.title}</h1>
-          <p className="text-gray-600 mt-2">{labels.subtitle}</p>
-        </div>
-
-        <div className="flex gap-2 mb-6">
-          <button
-            onClick={() => setIsLogin(true)}
-            className={`flex-1 py-2 px-4 rounded-lg transition-colors ${
-              isLogin ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-700'
-            }`}
-          >
-            {labels.login}
-          </button>
-          <button
-            onClick={() => setIsLogin(false)}
-            className={`flex-1 py-2 px-4 rounded-lg transition-colors ${
-              !isLogin ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-700'
-            }`}
-          >
-            {labels.signup}
-          </button>
-        </div>
-
-        <div className="mb-6">
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            {labels.selectRole}
-          </label>
-          <div className="grid grid-cols-4 gap-2">
-            <button
-              type="button"
-              onClick={() => setRole('farmer')}
-              className={`p-3 rounded-lg border-2 transition-all ${
-                role === 'farmer'
-                  ? 'border-green-600 bg-green-50'
-                  : 'border-gray-200 hover:border-gray-300'
-              }`}
-            >
-              <div className="text-2xl mb-1">👨‍🌾</div>
-              <div className="text-xs">Farmer</div>
-            </button>
-            <button
-              type="button"
-              onClick={() => setRole('labourer')}
-              className={`p-3 rounded-lg border-2 transition-all ${
-                role === 'labourer'
-                  ? 'border-green-600 bg-green-50'
-                  : 'border-gray-200 hover:border-gray-300'
-              }`}
-            >
-              <div className="text-2xl mb-1">👷</div>
-              <div className="text-xs">Labourer</div>
-            </button>
-            <button
-              type="button"
-              onClick={() => setRole('machine_owner')}
-              className={`p-3 rounded-lg border-2 transition-all ${
-                role === 'machine_owner'
-                  ? 'border-green-600 bg-green-50'
-                  : 'border-gray-200 hover:border-gray-300'
-              }`}
-            >
-              <div className="text-2xl mb-1">🚜</div>
-              <div className="text-xs">Machine</div>
-            </button>
-            <button
-              type="button"
-              onClick={() => setRole('admin')}
-              className={`p-3 rounded-lg border-2 transition-all ${
-                role === 'admin'
-                  ? 'border-green-600 bg-green-50'
-                  : 'border-gray-200 hover:border-gray-300'
-              }`}
-            >
-              <div className="text-2xl mb-1">🛡️</div>
-              <div className="text-xs">Admin</div>
-            </button>
-          </div>
-          {isLogin && role === 'admin' && (
-            <p className="mt-2 text-xs text-gray-500">Admin login only (signup disabled).</p>
-          )}
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {!isLogin && role !== 'admin' && (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                {labels.fullName}
-              </label>
-              <div className="relative">
-                <UserCircle className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
-                <input
-                  type="text"
-                  value={formData.name}
-                  onChange={e => setFormData({ ...formData, name: e.target.value })}
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                  placeholder={labels.fullName}
-                />
+          <div className="feature-grid stagger">
+            <div className="feature-card">
+              <MapPin className="input-icon" />
+              <div>
+                <p className="font-semibold text-gray-900">Nearby matching</p>
+                <p className="text-xs text-gray-600">Find labour and machines within your village radius.</p>
               </div>
             </div>
-          )}
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              {labels.phone}
-            </label>
-            <div className="relative">
-              <Phone className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
-              <input
-                type="tel"
-                value={formData.phone}
-                onChange={e => setFormData({ ...formData, phone: e.target.value })}
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                placeholder="9876543210"
-              />
-            </div>
-          </div>
-
-          {!isLogin && role !== 'admin' && (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                {labels.village}
-              </label>
-              <div className="relative">
-                <MapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
-                <input
-                  type="text"
-                  value={formData.village}
-                  onChange={e => setFormData({ ...formData, village: e.target.value })}
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                  placeholder={labels.village}
-                />
+            <div className="feature-card">
+              <ShieldCheck className="input-icon" />
+              <div>
+                <p className="font-semibold text-gray-900">Trust & safety</p>
+                <p className="text-xs text-gray-600">Ratings, reviews, and verification badges.</p>
               </div>
             </div>
-          )}
+            <div className="feature-card">
+              <Tractor className="input-icon" />
+              <div>
+                <p className="font-semibold text-gray-900">Equipment ready</p>
+                <p className="text-xs text-gray-600">Tractors, harvesters, and tools on demand.</p>
+              </div>
+            </div>
+            <div className="feature-card">
+              <Briefcase className="input-icon" />
+              <div>
+                <p className="font-semibold text-gray-900">Work updates</p>
+                <p className="text-xs text-gray-600">Track job status from posted to completed.</p>
+              </div>
+            </div>
+          </div>
+        </section>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              {labels.password}
-            </label>
-            <div className="relative">
-              <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
-              <input
-                type="password"
-                value={formData.password}
-                onChange={e => setFormData({ ...formData, password: e.target.value })}
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                placeholder="Enter password"
-              />
+        <section className="auth-panel">
+          <div className="auth-panel-top">
+            <div className="text-xs text-gray-500">Language (UI only)</div>
+            <div className="input-shell select-shell">
+              <select
+                value={language}
+                onChange={e => setLanguage(e.target.value)}
+                aria-label="Select language"
+              >
+                <option>English</option>
+                <option>తెలుగు</option>
+                <option>हिन्दी</option>
+              </select>
             </div>
           </div>
 
-          {!isLogin && role === 'farmer' && (
-            <div className="grid grid-cols-2 gap-3">
+          <div className="panel-head">
+            <div className="panel-icon">
+              <Briefcase className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-2xl font-bold display-font text-gray-900">
+                {isLogin ? 'Welcome back' : 'Create your account'}
+              </h2>
+              <p className="text-sm text-gray-600">{labels.subtitle}</p>
+            </div>
+          </div>
+
+          <div className="toggle-group">
+            <button
+              type="button"
+              onClick={() => setIsLogin(true)}
+              className={`toggle-button ${isLogin ? 'active' : ''}`}
+            >
+              {labels.login}
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsLogin(false)}
+              className={`toggle-button ${!isLogin ? 'active' : ''}`}
+            >
+              {labels.signup}
+            </button>
+          </div>
+
+          <div className="mt-6">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              {labels.selectRole}
+            </label>
+            <div className="role-grid">
+              <button
+                type="button"
+                onClick={() => setRole('farmer')}
+                className={`role-option ${role === 'farmer' ? 'active' : ''}`}
+              >
+                <div className="text-2xl mb-1">👨‍🌾</div>
+                <div className="text-xs">Farmer</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setRole('labourer')}
+                className={`role-option ${role === 'labourer' ? 'active' : ''}`}
+              >
+                <div className="text-2xl mb-1">👷</div>
+                <div className="text-xs">Labourer</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setRole('machine_owner')}
+                className={`role-option ${role === 'machine_owner' ? 'active' : ''}`}
+              >
+                <div className="text-2xl mb-1">🚜</div>
+                <div className="text-xs">Machine</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setRole('admin')}
+                className={`role-option ${role === 'admin' ? 'active' : ''}`}
+              >
+                <div className="text-2xl mb-1">🛡️</div>
+                <div className="text-xs">Admin</div>
+              </button>
+            </div>
+            {isLogin && role === 'admin' && (
+              <p className="mt-2 text-xs text-gray-500">Admin login only (signup disabled).</p>
+            )}
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-4 mt-6">
+            {!isLogin && role !== 'admin' && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  {labels.farmerType}
+                  {labels.fullName}
                 </label>
-                <select
-                  value={formData.farmerType}
-                  onChange={e => setFormData({ ...formData, farmerType: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent text-sm"
-                >
-                  <option>Small</option>
-                  <option>Medium</option>
-                  <option>Large</option>
-                </select>
+                <div className="input-shell">
+                  <UserCircle className="input-icon" />
+                  <input
+                    type="text"
+                    value={formData.name}
+                    onChange={e => setFormData({ ...formData, name: e.target.value })}
+                    placeholder={labels.fullName}
+                  />
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={formData.aadhaarKyc}
-                  onChange={e => setFormData({ ...formData, aadhaarKyc: e.target.checked })}
-                />
-                <span className="text-sm text-gray-700">{labels.aadhaar}</span>
-              </div>
-            </div>
-          )}
+            )}
 
-          {!isLogin && role === 'labourer' && (
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                {labels.skills}
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                {labels.phone}
               </label>
-              <div className="flex flex-wrap gap-2">
-                {availableSkills.map(skill => (
-                  <button
-                    key={skill}
-                    type="button"
-                    onClick={() => toggleSkill(skill)}
-                    className={`px-3 py-1 rounded-full text-sm transition-colors ${
-                      formData.skills.includes(skill)
-                        ? 'bg-green-600 text-white'
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                    }`}
-                  >
-                    {skill}
-                  </button>
-                ))}
+              <div className="input-shell">
+                <Phone className="input-icon" />
+                <input
+                  type="tel"
+                  value={formData.phone}
+                  onChange={e => setFormData({ ...formData, phone: e.target.value })}
+                  placeholder="9876543210"
+                />
               </div>
             </div>
-          )}
 
-          {error && (
-            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
-              {error}
+            {!isLogin && role !== 'admin' && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  {labels.email}
+                </label>
+                <div className="input-shell">
+                  <Mail className="input-icon" />
+                  <input
+                    type="email"
+                    value={formData.email}
+                    onChange={e => setFormData({ ...formData, email: e.target.value })}
+                    placeholder="name@example.com"
+                  />
+                </div>
+              </div>
+            )}
+
+            {!isLogin && role !== 'admin' && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  {labels.village}
+                </label>
+                <div className="input-shell">
+                  <MapPin className="input-icon" />
+                  <input
+                    type="text"
+                    value={formData.village}
+                    onChange={e => setFormData({ ...formData, village: e.target.value })}
+                    placeholder={labels.village}
+                  />
+                </div>
+              </div>
+            )}
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                {labels.password}
+              </label>
+              <div className="input-shell">
+                <Lock className="input-icon" />
+                <input
+                  type="password"
+                  value={formData.password}
+                  onChange={e => setFormData({ ...formData, password: e.target.value })}
+                  placeholder="Enter password"
+                />
+              </div>
+              <p className="helper-text">{labels.passwordNote}</p>
             </div>
-          )}
 
-          <button
-            type="submit"
-            className="w-full bg-green-600 text-white py-3 rounded-lg hover:bg-green-700 transition-colors font-medium"
-          >
-            {isLogin ? labels.login : labels.signup}
-          </button>
-        </form>
+            {!isLogin && role === 'farmer' && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    {labels.farmerType}
+                  </label>
+                  <div className="input-shell">
+                    <select
+                      value={formData.farmerType}
+                      onChange={e => setFormData({ ...formData, farmerType: e.target.value })}
+                    >
+                      <option>Small</option>
+                      <option>Medium</option>
+                      <option>Large</option>
+                    </select>
+                  </div>
+                </div>
+                <label className="input-shell checkbox-shell">
+                  <input
+                    type="checkbox"
+                    checked={formData.aadhaarKyc}
+                    onChange={e => setFormData({ ...formData, aadhaarKyc: e.target.checked })}
+                  />
+                  <span className="text-sm text-gray-700">{labels.aadhaar}</span>
+                </label>
+              </div>
+            )}
 
-        <div className="mt-4 text-center text-xs text-gray-600">
-          {isLogin ? labels.newUser : labels.existing}
-        </div>
+            {!isLogin && role === 'labourer' && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  {labels.skills}
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {availableSkills.map(skill => (
+                    <button
+                      key={skill}
+                      type="button"
+                      onClick={() => toggleSkill(skill)}
+                      className={`skill-chip ${formData.skills.includes(skill) ? 'active' : ''}`}
+                    >
+                      {skill}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
-        {isLogin && (
-          <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-            <p className="text-sm text-blue-900 font-medium mb-2">Demo Accounts:</p>
-            <div className="text-xs text-blue-800 space-y-1">
-              <p>Farmer: 9876543210 / farmer123</p>
-              <p>Labourer: 9876543211 / labourer123</p>
-              <p>Machine: 9876543213 / machine123</p>
-              <p>Admin: 9000000000 / admin123</p>
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+            {error && (
+              <div className="error-box">
+                {error}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              className="primary-btn w-full"
+              disabled={isSubmitting}
+            >
+              {isLogin ? labels.login : labels.signup}
+            </button>
+          </form>
+
+          <div className="mt-4 text-center text-xs text-gray-600">
+            {isLogin ? (
               <button
                 type="button"
-                onClick={() => fillDemo('9876543210', 'farmer123')}
-                className="px-2 py-1 rounded-lg border border-blue-200 bg-white"
+                onClick={() => setIsLogin(false)}
+                style={{ textDecoration: 'underline', textUnderlineOffset: '4px' }}
               >
-                Quick Farmer Login
+                {labels.newUser}
               </button>
+            ) : (
               <button
                 type="button"
-                onClick={() => fillDemo('9876543211', 'labourer123')}
-                className="px-2 py-1 rounded-lg border border-blue-200 bg-white"
+                onClick={() => setIsLogin(true)}
+                style={{ textDecoration: 'underline', textUnderlineOffset: '4px' }}
               >
-                Quick Labour Login
+                {labels.existing}
               </button>
-              <button
-                type="button"
-                onClick={() => fillDemo('9876543213', 'machine123')}
-                className="px-2 py-1 rounded-lg border border-blue-200 bg-white"
-              >
-                Quick Machine Login
-              </button>
-              <button
-                type="button"
-                onClick={() => fillDemo('9000000000', 'admin123')}
-                className="px-2 py-1 rounded-lg border border-blue-200 bg-white"
-              >
-                Quick Admin Login
-              </button>
-            </div>
+            )}
           </div>
-        )}
+
+          {isLogin && (
+            <div className="demo-card mt-6">
+              <p className="text-sm text-gray-900 font-medium mb-2">Use your registered account to login.</p>
+              <p className="text-xs text-gray-600">Demo credentials are removed in production mode.</p>
+            </div>
+          )}
+        </section>
       </div>
     </div>
   );
 }
+
+
+
+
