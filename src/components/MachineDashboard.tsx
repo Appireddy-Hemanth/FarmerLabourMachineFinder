@@ -323,8 +323,7 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
       accept: 'Accept',
       reject: 'Reject',
       markCompleted: 'Mark as Completed',
-      toggled: 'Toggle',
-      requestedBy: 'Requested by'
+      toggled: 'Toggle'
     },
     'తెలుగు': {
       role: 'యంత్ర యజమాని',
@@ -373,8 +372,7 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
       accept: 'అంగీకరించండి',
       reject: 'తిరస్కరించండి',
       markCompleted: 'పూర్తయిందిగా గుర్తించండి',
-      toggled: 'టాగుల్',
-      requestedBy: 'అభ్యర్థించినవారు'
+      toggled: 'టాగుల్'
     },
     हिन्दी: {
       role: 'मशीन मालिक',
@@ -423,8 +421,7 @@ export function MachineDashboard({ user, onLogout }: MachineDashboardProps) {
       accept: 'स्वीकारें',
       reject: 'अस्वीकारें',
       markCompleted: 'पूर्ण के रूप में चिन्हित करें',
-      toggled: 'टॉगल',
-      requestedBy: 'अनुरोधकर्ता'
+      toggled: 'टॉगल'
     }
   };
 
